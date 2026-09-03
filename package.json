@@ -34,8 +34,12 @@
     "build": "tsc -p tsconfig.build.json",
     "check": "bun run typecheck && bun run typecheck:tests && bun run test:runtime && bun run build"
   },
+  "peerDependencies": {
+    "gelis": ">=0.0.0"
+  },
   "devDependencies": {
     "@types/bun": "^1.4.0",
+    "gelis": "git+https://github.com/gelisjs/gelis.git#d868dcb1328278568ee5efe1f91940cc3d8de92f",
     "typescript": "7.0.2"
   }
 }
