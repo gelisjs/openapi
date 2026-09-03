@@ -4,6 +4,10 @@ import { projectQueryParameters } from "./query";
 
 import type { ProjectedQueryParameterObject } from "./query";
 
+import { projectRequestBody } from "./request-body";
+
+import type { ProjectedRequestBodyObject } from "./request-body";
+
 import type { InputSchemaResolver } from "./schema-resolution";
 
 import type { OpenAPIGenerationIssue } from "./types";
@@ -26,6 +30,8 @@ export type ProjectedParameterObject = ProjectedPathParameterObject | ProjectedQ
 
 export interface ProjectedOperationObject {
   parameters?: ProjectedParameterObject[];
+
+  requestBody?: ProjectedRequestBodyObject;
 }
 
 export type ProjectedPathItemObject = Partial<Record<OpenAPIMethodKey, ProjectedOperationObject>>;
@@ -70,15 +76,11 @@ export function projectPaths(
   for (const candidate of candidates) {
     const { route, openapiPath, templateShape, parameterNames } = candidate;
 
-    /*
-     * Resolve route-local semantic issues before
-     * path collision handling so generation can
-     * aggregate as many independent issues as
-     * possible in one pass.
-     */
     const queryProjection = projectQueryParameters(route, resolver);
 
-    issues.push(...queryProjection.issues);
+    const bodyProjection = projectRequestBody(route, resolver);
+
+    issues.push(...queryProjection.issues, ...bodyProjection.issues);
 
     const existingOwner = templateOwners.get(templateShape);
 
@@ -140,12 +142,17 @@ export function projectPaths(
 
     const parameters: ProjectedParameterObject[] = [...pathParameters, ...queryProjection.parameters];
 
-    operations[method] =
-      parameters.length === 0
-        ? {}
-        : {
-            parameters,
-          };
+    const operation: ProjectedOperationObject = {};
+
+    if (parameters.length > 0) {
+      operation.parameters = parameters;
+    }
+
+    if (bodyProjection.requestBody !== undefined) {
+      operation.requestBody = bodyProjection.requestBody;
+    }
+
+    operations[method] = operation;
   }
 
   return {
