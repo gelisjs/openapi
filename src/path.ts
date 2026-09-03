@@ -1,5 +1,11 @@
 import type { ApplicationContractSnapshot, ContractRouteSnapshot, HttpMethod } from "gelis";
 
+import { projectQueryParameters } from "./query";
+
+import type { ProjectedQueryParameterObject } from "./query";
+
+import type { InputSchemaResolver } from "./schema-resolution";
+
 import type { OpenAPIGenerationIssue } from "./types";
 
 type OpenAPIMethodKey = "get" | "post" | "put" | "patch" | "delete" | "options" | "head";
@@ -16,8 +22,10 @@ export interface ProjectedPathParameterObject {
   };
 }
 
+export type ProjectedParameterObject = ProjectedPathParameterObject | ProjectedQueryParameterObject;
+
 export interface ProjectedOperationObject {
-  parameters?: ProjectedPathParameterObject[];
+  parameters?: ProjectedParameterObject[];
 }
 
 export type ProjectedPathItemObject = Partial<Record<OpenAPIMethodKey, ProjectedOperationObject>>;
@@ -46,7 +54,11 @@ interface TemplateOwner {
 
 const METHOD_ORDER: readonly HttpMethod[] = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"];
 
-export function projectPaths(contract: ApplicationContractSnapshot): PathProjectionResult {
+export function projectPaths(
+  contract: ApplicationContractSnapshot,
+
+  resolver?: InputSchemaResolver,
+): PathProjectionResult {
   const issues: OpenAPIGenerationIssue[] = [];
 
   const candidates = createCandidates(contract);
@@ -57,6 +69,16 @@ export function projectPaths(contract: ApplicationContractSnapshot): PathProject
 
   for (const candidate of candidates) {
     const { route, openapiPath, templateShape, parameterNames } = candidate;
+
+    /*
+     * Resolve route-local semantic issues before
+     * path collision handling so generation can
+     * aggregate as many independent issues as
+     * possible in one pass.
+     */
+    const queryProjection = projectQueryParameters(route, resolver);
+
+    issues.push(...queryProjection.issues);
 
     const existingOwner = templateOwners.get(templateShape);
 
@@ -114,7 +136,9 @@ export function projectPaths(contract: ApplicationContractSnapshot): PathProject
       continue;
     }
 
-    const parameters = createPathParameters(parameterNames);
+    const pathParameters = createPathParameters(parameterNames);
+
+    const parameters: ProjectedParameterObject[] = [...pathParameters, ...queryProjection.parameters];
 
     operations[method] =
       parameters.length === 0
