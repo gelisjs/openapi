@@ -1,8 +1,13 @@
-/*
- * @gelis/openapi
- *
- * OpenAPI 3.1 contract generation for Gelis.
- *
- * Public implementation begins in B10.
- */
-export {};
+export { OpenAPIGenerationError } from "./errors";
+
+export { OPENAPI_JSON_SCHEMA_DIALECT, OPENAPI_VERSION } from "./types";
+
+export type {
+  OpenAPIDocument,
+  OpenAPIGenerationIssue,
+  OpenAPIGenerationOptions,
+  OpenAPIHttpMethod,
+  OpenAPIInfoObject,
+  OpenAPIServerObject,
+  OpenAPITagObject,
+} from "./types";
