@@ -1,0 +1,38 @@
+{
+  "name": "@gelis/openapi",
+  "version": "0.0.0",
+  "description": "OpenAPI 3.1 contract generation for Gelis.",
+  "license": "MIT",
+  "type": "module",
+  "private": true,
+  "sideEffects": false,
+  "packageManager": "bun@1.4.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gelisjs/openapi.git"
+  },
+  "bugs": {
+    "url": "https://github.com/gelisjs/openapi/issues"
+  },
+  "homepage": "https://github.com/gelisjs/openapi#readme",
+  "files": [
+    "dist"
+  ],
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "tsc -p tsconfig.build.json",
+    "check": "bun run typecheck && bun run build"
+  },
+  "devDependencies": {
+    "typescript": "7.0.2"
+  }
+}
