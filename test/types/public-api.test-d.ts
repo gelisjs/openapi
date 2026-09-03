@@ -44,8 +44,8 @@ const error = new OpenAPIGenerationError([fullIssue]);
 
 type _ErrorIssues = Expect<Equal<typeof error.issues, readonly OpenAPIGenerationIssue[]>>;
 
-// @ts-expect-error version is required
 const missingVersion: OpenAPIGenerationOptions = {
+  // @ts-expect-error version is required
   info: {
     title: "Missing version",
   },
