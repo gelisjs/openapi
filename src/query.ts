@@ -1,4 +1,4 @@
-import type { ContractRouteSnapshot } from "gelis";
+import type { ContractRouteSnapshot, OpenAPIJSONSchema, OpenAPIQueryMetadata, OpenAPIQueryParameter } from "gelis";
 
 import type { InputSchemaResolver, ResolvedJSONSchema } from "./schema-resolution";
 
@@ -11,9 +11,13 @@ export interface ProjectedQueryParameterObject {
 
   in: "query";
 
+  description?: string;
+
   required?: boolean;
 
-  schema: ResolvedJSONSchema;
+  deprecated?: boolean;
+
+  schema?: ResolvedJSONSchema;
 
   style?: "form" | "spaceDelimited" | "pipeDelimited" | "deepObject";
 
@@ -49,6 +53,62 @@ export function projectQueryParameters(
 
   resolver: InputSchemaResolver | undefined,
 ): QueryProjectionResult {
+  const metadata = getQueryMetadata(route);
+
+  if (metadata !== undefined) {
+    if (metadata.opaque === true) {
+      return {
+        parameters: [],
+
+        issues: [],
+      };
+    }
+
+    if (Array.isArray(metadata.parameters)) {
+      return projectExplicitQueryParameters(route, metadata.parameters);
+    }
+
+    if (metadata.schema !== undefined) {
+      let schema: ResolvedJSONSchema;
+
+      try {
+        schema = cloneOpenAPIJSONSchema(metadata.schema);
+      } catch (cause) {
+        return {
+          parameters: [],
+
+          issues: [
+            createQueryIssue(
+              route,
+
+              "OPENAPI_QUERY_SCHEMA_OVERRIDE_INVALID",
+
+              `Failed to clone the OpenAPI query schema override for ${route.method} ${route.path}.`,
+
+              cause,
+            ),
+          ],
+        };
+      }
+
+      return projectDecomposedQuerySchema(route, schema);
+    }
+
+    return {
+      parameters: [],
+
+      issues: [
+        createQueryIssue(
+          route,
+
+          "OPENAPI_QUERY_METADATA_INVALID",
+
+          `OpenAPI query metadata for ${route.method} ${route.path} does not select schema, parameters, or opaque projection.`,
+        ),
+      ],
+    };
+  }
+
   const query = route.query;
 
   if (query === undefined) {
@@ -97,6 +157,121 @@ export function projectQueryParameters(
     };
   }
 
+  return projectDecomposedQuerySchema(route, schema);
+}
+
+function projectExplicitQueryParameters(
+  route: ContractRouteSnapshot,
+
+  declarations: readonly OpenAPIQueryParameter[],
+): QueryProjectionResult {
+  const parameters: ProjectedQueryParameterObject[] = [];
+
+  const issues: OpenAPIGenerationIssue[] = [];
+
+  const seen = new Set<string>();
+
+  for (let index = 0; index < declarations.length; index++) {
+    const declaration = declarations[index];
+
+    if (declaration === undefined) {
+      continue;
+    }
+
+    const name = declaration.name;
+
+    if (seen.has(name)) {
+      issues.push({
+        code: "OPENAPI_QUERY_PARAMETER_DUPLICATE",
+
+        method: route.method,
+
+        path: route.path,
+
+        location: `request.query.parameters.${index}`,
+
+        message: `OpenAPI explicit query parameter "${name}" is declared more than once on ${route.method} ${route.path}.`,
+      });
+
+      continue;
+    }
+
+    seen.add(name);
+
+    const parameter: ProjectedQueryParameterObject = {
+      name,
+
+      in: "query",
+    };
+
+    if (declaration.description !== undefined) {
+      parameter.description = declaration.description;
+    }
+
+    if (declaration.required !== undefined) {
+      parameter.required = declaration.required;
+    }
+
+    if (declaration.deprecated !== undefined) {
+      parameter.deprecated = declaration.deprecated;
+    }
+
+    if (declaration.style !== undefined) {
+      parameter.style = declaration.style;
+    }
+
+    if (declaration.explode !== undefined) {
+      parameter.explode = declaration.explode;
+    }
+
+    if (declaration.schema !== undefined) {
+      try {
+        parameter.schema = prepareSchemaOccurrence(
+          route,
+
+          {
+            kind: "query",
+
+            name,
+          },
+
+          cloneOpenAPIJSONSchema(declaration.schema),
+        );
+      } catch (cause) {
+        issues.push({
+          code: schemaResourceIssueCode(cause),
+
+          method: route.method,
+
+          path: route.path,
+
+          location: `request.query.parameters.${index}.schema`,
+
+          message: `Failed to prepare explicit query parameter schema "${name}" for ${route.method} ${route.path}: ${schemaResourceIssueDetail(cause)}`,
+
+          ...(cause === undefined
+            ? {}
+            : {
+                cause,
+              }),
+        });
+      }
+    }
+
+    parameters.push(parameter);
+  }
+
+  return {
+    parameters,
+    issues,
+  };
+}
+
+function projectDecomposedQuerySchema(
+  route: ContractRouteSnapshot,
+
+  schema: ResolvedJSONSchema,
+): QueryProjectionResult {
   const decomposition = decomposeQuerySchema(schema);
 
   if (typeof decomposition === "string") {
@@ -191,6 +366,16 @@ export function projectQueryParameters(
   };
 }
 
+function getQueryMetadata(route: ContractRouteSnapshot): OpenAPIQueryMetadata | undefined {
+  const openapi = route.openapi;
+
+  if (openapi === undefined || openapi === false) {
+    return undefined;
+  }
+
+  return openapi.request?.query;
+}
+
 function decomposeQuerySchema(schema: ResolvedJSONSchema): QuerySchemaDecomposition | string {
   if (typeof schema === "boolean") {
     return "the root schema is boolean rather than an object schema.";
@@ -248,6 +433,20 @@ function decomposeQuerySchema(schema: ResolvedJSONSchema): QuerySchemaDecomposit
     properties,
     required,
   };
+}
+
+function cloneOpenAPIJSONSchema(schema: OpenAPIJSONSchema): ResolvedJSONSchema {
+  if (typeof schema === "boolean") {
+    return schema;
+  }
+
+  const cloned = structuredClone(schema);
+
+  if (!isRecord(cloned)) {
+    throw new TypeError("OpenAPI query schema override must be a JSON Schema object or boolean schema.");
+  }
+
+  return cloned;
 }
 
 function allowsObject(type: unknown): boolean {
