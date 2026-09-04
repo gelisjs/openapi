@@ -16,6 +16,8 @@ import { projectResponses } from "./response";
 
 import type { ProjectedResponsesObject } from "./response";
 
+import { createStandardJSONSchemaResolver } from "./standard-json-schema";
+
 import type { OpenAPIGenerationIssue } from "./types";
 
 type OpenAPIMethodKey = "get" | "post" | "put" | "patch" | "delete" | "options" | "head";
@@ -75,9 +77,19 @@ export function projectPaths(
 ): PathProjectionResult {
   const issues: OpenAPIGenerationIssue[] = [];
 
-  const inputResolver = getInputSchemaResolver(resolver);
+  /*
+   * No injected resolver means normal production
+   * Standard JSON Schema conversion.
+   *
+   * Passing an explicit partial resolver remains
+   * useful for projector unit tests and later
+   * override/resource stages.
+   */
+  const activeResolver = resolver ?? createStandardJSONSchemaResolver();
 
-  const outputResolver = getOutputSchemaResolver(resolver);
+  const inputResolver = getInputSchemaResolver(activeResolver);
+
+  const outputResolver = getOutputSchemaResolver(activeResolver);
 
   const candidates = createCandidates(contract);
 

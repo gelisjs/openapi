@@ -216,7 +216,11 @@ describe("OpenAPI response projection", () => {
       () => new Response(),
     );
 
-    const result = projectPaths(inspectContract(app));
+    const result = projectPaths(
+      inspectContract(app),
+
+      {},
+    );
 
     expect(result.issues).toEqual([
       {

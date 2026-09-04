@@ -132,7 +132,11 @@ describe("OpenAPI query projection", () => {
       () => "search",
     );
 
-    const result = projectPaths(inspectContract(app));
+    const result = projectPaths(
+      inspectContract(app),
+
+      {},
+    );
 
     expect(result.issues).toEqual([
       {

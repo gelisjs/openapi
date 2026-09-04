@@ -136,7 +136,11 @@ describe("OpenAPI request body projection", () => {
       () => "created",
     );
 
-    const result = projectPaths(inspectContract(app));
+    const result = projectPaths(
+      inspectContract(app),
+
+      {},
+    );
 
     expect(result.issues).toEqual([
       {
