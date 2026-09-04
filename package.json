@@ -30,9 +30,11 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "typecheck:tests": "tsc -p tsconfig.test.json --noEmit",
+    "typecheck:bench": "tsc -p bench/tsconfig.json --noEmit",
     "test:runtime": "bun test test/runtime",
     "build": "tsc -p tsconfig.build.json",
-    "check": "bun run typecheck && bun run typecheck:tests && bun run test:runtime && bun run build"
+    "bench:generation": "bun bench/generation/run.mts",
+    "check": "bun run typecheck && bun run typecheck:tests && bun run typecheck:bench && bun run test:runtime && bun run build"
   },
   "devDependencies": {
     "@types/bun": "^1.4.0",
