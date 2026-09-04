@@ -2,11 +2,13 @@ import { Gelis, inspectContract } from "gelis";
 
 import type { StandardJSONSchemaV1, StandardSchemaV1 } from "gelis";
 
+import { generateOpenAPI } from "../../src";
+
 import { projectPaths } from "../../src/path";
 
 type Scenario = "plain" | "shared" | "unique";
 
-type Mode = "projection" | "end-to-end";
+type Mode = "projection" | "end-to-end" | "public";
 
 interface Config {
   readonly sizes: readonly number[];
@@ -50,7 +52,15 @@ const DEFAULT_WARMUPS = 3;
 
 const SCENARIOS: readonly Scenario[] = ["plain", "shared", "unique"];
 
-const MODES: readonly Mode[] = ["projection", "end-to-end"];
+const MODES: readonly Mode[] = ["projection", "end-to-end", "public"];
+
+const PUBLIC_GENERATION_OPTIONS = {
+  info: {
+    title: "Gelis Benchmark",
+
+    version: "0.0.0",
+  },
+} as const;
 
 const config = parseConfig(process.argv.slice(2));
 
@@ -70,37 +80,21 @@ for (const scenario of SCENARIOS) {
 
     const snapshot = inspectContract(app);
 
-    /*
-     * Correctness preflight before timing.
-     *
-     * Benchmark results are meaningless if the
-     * workload does not successfully project.
-     */
     const preflight = projectPaths(snapshot);
 
     assertProjection(scenario, size, preflight.paths, preflight.issues);
 
+    const publicPreflight = generateOpenAPI(
+      app,
+
+      PUBLIC_GENERATION_OPTIONS,
+    );
+
+    assertPathCount(scenario, "public", size, publicPreflight.paths);
+
     for (const mode of MODES) {
       const sample = benchmark(
-        () => {
-          const result = mode === "projection" ? projectPaths(snapshot) : projectPaths(inspectContract(app));
-
-          /*
-           * Consume observable output and retain a
-           * correctness guard inside timed runs.
-           */
-          if (result.issues.length !== 0) {
-            throw new Error(`${scenario}/${mode}/${size}: projection produced ${result.issues.length} issue(s)`);
-          }
-
-          const count = Object.keys(result.paths).length;
-
-          if (count !== size) {
-            throw new Error(`${scenario}/${mode}/${size}: expected ${size} paths, received ${count}`);
-          }
-
-          return count;
-        },
+        () => runMode(mode, app, snapshot, scenario, size),
 
         config.warmups,
         config.runs,
@@ -126,6 +120,54 @@ for (const scenario of SCENARIOS) {
 printResults(results);
 
 printScaling(results, config.sizes);
+
+function runMode(
+  mode: Mode,
+
+  app: Gelis,
+
+  snapshot: ReturnType<typeof inspectContract>,
+
+  scenario: Scenario,
+
+  size: number,
+): number {
+  if (mode === "public") {
+    const document = generateOpenAPI(
+      app,
+
+      PUBLIC_GENERATION_OPTIONS,
+    );
+
+    return assertPathCount(scenario, mode, size, document.paths);
+  }
+
+  const result = mode === "projection" ? projectPaths(snapshot) : projectPaths(inspectContract(app));
+
+  if (result.issues.length !== 0) {
+    throw new Error(`${scenario}/${mode}/${size}: projection produced ${result.issues.length} issue(s)`);
+  }
+
+  return assertPathCount(scenario, mode, size, result.paths);
+}
+
+function assertPathCount(
+  scenario: Scenario,
+
+  mode: Mode,
+
+  size: number,
+
+  paths: Record<string, unknown>,
+): number {
+  const count = Object.keys(paths).length;
+
+  if (count !== size) {
+    throw new Error(`${scenario}/${mode}/${size}: expected ${size} paths, received ${count}`);
+  }
+
+  return count;
+}
 
 function createApplication(
   scenario: Scenario,
