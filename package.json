@@ -34,6 +34,7 @@
     "test:runtime": "bun test test/runtime",
     "build": "tsc -p tsconfig.build.json",
     "bench:generation": "bun bench/generation/run.mts",
+    "bench:generation:components": "bun bench/generation/components.mts",
     "check": "bun run typecheck && bun run typecheck:tests && bun run typecheck:bench && bun run test:runtime && bun run build"
   },
   "devDependencies": {
