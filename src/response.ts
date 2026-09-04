@@ -755,7 +755,7 @@ function cloneOpenAPIJSONSchema(schema: OpenAPIJSONSchema): ResolvedJSONSchema {
 }
 
 function isStandardSchema(value: unknown): value is StandardSchemaV1 {
-  return typeof value === "object" && value !== null && "~standard" in value;
+  return value !== null && (typeof value === "object" || typeof value === "function") && "~standard" in value;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

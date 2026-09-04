@@ -94,6 +94,18 @@ describe("OpenAPI cross-library Standard JSON Schema conformance", () => {
       () => new Response(),
     );
 
+    app.get(
+      "/arktype-direct",
+
+      {
+        responses: {
+          200: schema,
+        },
+      },
+
+      () => new Response(),
+    );
+
     const result = projectPaths(inspectContract(app));
 
     expect(result.issues).toEqual([]);
@@ -106,6 +118,12 @@ describe("OpenAPI cross-library Standard JSON Schema conformance", () => {
 
     assertObjectStringProperty(
       result.paths["/arktype"]?.post?.responses["200"]?.content?.["application/json"]?.schema,
+
+      "name",
+    );
+
+    assertObjectStringProperty(
+      result.paths["/arktype-direct"]?.get?.responses["200"]?.content?.["application/json"]?.schema,
 
       "name",
     );
