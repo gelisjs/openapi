@@ -265,7 +265,7 @@ describe("OpenAPI body and response metadata", () => {
       {
         responses: {
           200: {
-            schema: createSchema(),
+            schema: createSchema<string>(),
 
             serialize: "text",
 
@@ -520,7 +520,7 @@ describe("OpenAPI body and response metadata", () => {
   });
 });
 
-function createSchema(): StandardSchemaV1<Record<string, unknown>, Record<string, unknown>> {
+function createSchema<Output = Record<string, unknown>>(): StandardSchemaV1<Output, Output> {
   return {
     "~standard": {
       version: 1,
@@ -529,7 +529,7 @@ function createSchema(): StandardSchemaV1<Record<string, unknown>, Record<string
 
       validate(value: unknown) {
         return {
-          value: value as Record<string, unknown>,
+          value: value as Output,
         };
       },
     },

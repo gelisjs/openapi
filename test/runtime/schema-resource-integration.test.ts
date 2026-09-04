@@ -60,7 +60,7 @@ describe("OpenAPI schema resource integration", () => {
 
     expect(outputCalls).toBe(1);
 
-    expect(result.paths["/trees/{id}"]?.post?.requestBody?.content["application/json"].schema).toEqual({
+    expect(result.paths["/trees/{id}"]?.post?.requestBody?.content["application/json"]?.schema).toEqual({
       $defs: {
         node: {
           type: "object",
@@ -254,7 +254,7 @@ describe("OpenAPI schema resource integration", () => {
 
     expect(result.issues).toEqual([]);
 
-    expect(result.paths["/external"]?.post?.requestBody?.content["application/json"].schema).toEqual({
+    expect(result.paths["/external"]?.post?.requestBody?.content["application/json"]?.schema).toEqual({
       $id: "https://example.com/root.json",
 
       $ref: "other.json",
