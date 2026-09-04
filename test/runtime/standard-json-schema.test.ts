@@ -112,6 +112,10 @@ describe("Standard JSON Schema resolution", () => {
 
     converterOwned["type"] = "string";
 
+    if (!isRecord(first)) {
+      throw new Error("Expected object schema");
+    }
+
     const properties = first["properties"];
 
     if (!isRecord(properties)) {
