@@ -8,7 +8,13 @@ import { projectRequestBody } from "./request-body";
 
 import type { ProjectedRequestBodyObject } from "./request-body";
 
-import type { InputSchemaResolver } from "./schema-resolution";
+import { getInputSchemaResolver, getOutputSchemaResolver } from "./schema-resolution";
+
+import type { SchemaResolver } from "./schema-resolution";
+
+import { projectResponses } from "./response";
+
+import type { ProjectedResponsesObject } from "./response";
 
 import type { OpenAPIGenerationIssue } from "./types";
 
@@ -32,6 +38,8 @@ export interface ProjectedOperationObject {
   parameters?: ProjectedParameterObject[];
 
   requestBody?: ProjectedRequestBodyObject;
+
+  responses: ProjectedResponsesObject;
 }
 
 export type ProjectedPathItemObject = Partial<Record<OpenAPIMethodKey, ProjectedOperationObject>>;
@@ -63,9 +71,13 @@ const METHOD_ORDER: readonly HttpMethod[] = ["GET", "POST", "PUT", "PATCH", "DEL
 export function projectPaths(
   contract: ApplicationContractSnapshot,
 
-  resolver?: InputSchemaResolver,
+  resolver?: SchemaResolver,
 ): PathProjectionResult {
   const issues: OpenAPIGenerationIssue[] = [];
+
+  const inputResolver = getInputSchemaResolver(resolver);
+
+  const outputResolver = getOutputSchemaResolver(resolver);
 
   const candidates = createCandidates(contract);
 
@@ -76,11 +88,13 @@ export function projectPaths(
   for (const candidate of candidates) {
     const { route, openapiPath, templateShape, parameterNames } = candidate;
 
-    const queryProjection = projectQueryParameters(route, resolver);
+    const queryProjection = projectQueryParameters(route, inputResolver);
 
-    const bodyProjection = projectRequestBody(route, resolver);
+    const bodyProjection = projectRequestBody(route, inputResolver);
 
-    issues.push(...queryProjection.issues, ...bodyProjection.issues);
+    const responseProjection = projectResponses(route, outputResolver);
+
+    issues.push(...queryProjection.issues, ...bodyProjection.issues, ...responseProjection.issues);
 
     const existingOwner = templateOwners.get(templateShape);
 
@@ -142,7 +156,9 @@ export function projectPaths(
 
     const parameters: ProjectedParameterObject[] = [...pathParameters, ...queryProjection.parameters];
 
-    const operation: ProjectedOperationObject = {};
+    const operation: ProjectedOperationObject = {
+      responses: responseProjection.responses,
+    };
 
     if (parameters.length > 0) {
       operation.parameters = parameters;
