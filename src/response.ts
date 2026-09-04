@@ -1,4 +1,12 @@
-import type { ContractRouteSnapshot, ResponseContract, ResponseDescriptor, StandardSchemaV1 } from "gelis";
+import type {
+  ContractRouteSnapshot,
+  OpenAPIJSONSchema,
+  OpenAPIResponseMetadata,
+  OpenAPIResponseMetadataMap,
+  ResponseContract,
+  ResponseDescriptor,
+  StandardSchemaV1,
+} from "gelis";
 
 import type { OutputSchemaResolver, ResolvedJSONSchema } from "./schema-resolution";
 
@@ -7,7 +15,7 @@ import type { OpenAPIGenerationIssue } from "./types";
 import { prepareSchemaOccurrence, schemaResourceIssueCode, schemaResourceIssueDetail } from "./schema-occurrence";
 
 export interface ProjectedResponseMediaTypeObject {
-  schema: ResolvedJSONSchema;
+  schema?: ResolvedJSONSchema;
 }
 
 export interface ProjectedResponseObject {
@@ -24,6 +32,8 @@ export interface ResponseProjectionResult {
   readonly issues: OpenAPIGenerationIssue[];
 }
 
+type ResponseStatus = number | "default";
+
 const BODYLESS_STATUSES = new Set([204, 205, 304]);
 
 export function projectResponses(
@@ -33,32 +43,13 @@ export function projectResponses(
 ): ResponseProjectionResult {
   const declared = route.responses;
 
-  /*
-   * Handler return inference is intentionally not
-   * available through the runtime contract source.
-   *
-   * Never guess 200 here. An implicit route is an
-   * opaque default response.
-   */
-  if (declared === undefined) {
-    return {
-      responses: {
-        default: {
-          description: "Undocumented response",
-        },
-      },
-
-      issues: [],
-    };
-  }
+  const metadata = getResponseMetadata(route);
 
   const responses: ProjectedResponsesObject = {};
 
   const issues: OpenAPIGenerationIssue[] = [];
 
-  const statuses = Object.keys(declared).map(Number).sort(compareNumbers);
-
-  if (statuses.length === 0) {
+  if (declared !== undefined && Object.keys(declared).length === 0) {
     issues.push({
       code: "OPENAPI_RESPONSE_CONTRACT_EMPTY",
 
@@ -70,19 +61,39 @@ export function projectResponses(
 
       message: `The explicit response contract for ${route.method} ${route.path} does not declare any statuses.`,
     });
-
-    return {
-      responses,
-      issues,
-    };
   }
 
-  for (const status of statuses) {
-    const entry = declared[status];
+  const statuses = collectNumericStatuses(declared, metadata);
 
-    const projection = projectResponse(route, status, entry, resolver);
+  for (const status of statuses) {
+    const hasRuntimeContract = declared !== undefined && hasOwn(declared, String(status));
+
+    const entry = hasRuntimeContract ? declared[status] : undefined;
+
+    const patch = metadata?.[status];
+
+    const projection = projectResponse(route, status, hasRuntimeContract, entry, patch, resolver);
 
     responses[String(status)] = projection.response;
+
+    issues.push(...projection.issues);
+  }
+
+  /*
+   * An implicit handler response always keeps an
+   * opaque default response. Numeric documentation
+   * additions must never turn that into an inferred
+   * exhaustive runtime response contract.
+   *
+   * Explicit runtime contracts only gain a default
+   * response when metadata requests one.
+   */
+  const defaultMetadata = metadata?.default;
+
+  if (declared === undefined || defaultMetadata !== undefined) {
+    const projection = projectDefaultResponse(route, defaultMetadata);
+
+    responses.default = projection.response;
 
     issues.push(...projection.issues);
   }
@@ -98,7 +109,11 @@ function projectResponse(
 
   status: number,
 
+  hasRuntimeContract: boolean,
+
   entry: ResponseContract,
+
+  metadata: OpenAPIResponseMetadata | undefined,
 
   resolver: OutputSchemaResolver | undefined,
 ): {
@@ -107,22 +122,225 @@ function projectResponse(
   readonly issues: OpenAPIGenerationIssue[];
 } {
   const response: ProjectedResponseObject = {
-    description: `HTTP ${status} response`,
+    description: metadata?.description ?? `HTTP ${status} response`,
   };
 
   /*
-   * Gelis explicitly treats 204, 205, and 304
-   * as bodyless. An undefined response entry also
-   * means there is no documented response body.
+   * Runtime bodyless semantics always win.
+   *
+   * Description/deprecation-style documentation can
+   * patch the response, but schema/media content
+   * cannot be invented for a status that Gelis
+   * guarantees has no body.
    */
-  if (BODYLESS_STATUSES.has(status) || entry === undefined) {
+  if (hasRuntimeContract && (BODYLESS_STATUSES.has(status) || entry === undefined)) {
+    if (metadata?.schema !== undefined || metadata?.mediaType !== undefined) {
+      return {
+        response,
+
+        issues: [
+          createResponseIssue(
+            route,
+            status,
+
+            "OPENAPI_RESPONSE_BODYLESS_CONTENT_CONFLICT",
+
+            `OpenAPI response metadata for ${route.method} ${route.path} status ${status} declares content for a runtime bodyless response.`,
+          ),
+        ],
+      };
+    }
+
     return {
       response,
+
       issues: [],
     };
   }
 
-  const schema = responseSchema(entry);
+  /*
+   * Opaque metadata bypasses schema conversion.
+   *
+   * If runtime serialization already gives us a
+   * deterministic media type, retain it. Metadata
+   * may provide a media type only when it does not
+   * contradict that runtime fact.
+   */
+  if (metadata?.opaque === true) {
+    const runtimeMediaType = hasRuntimeContract ? runtimeExplicitMediaType(entry) : undefined;
+
+    const selected = selectMediaType(metadata.mediaType, runtimeMediaType);
+
+    if (selected.conflict) {
+      if (selected.mediaType !== undefined) {
+        response.content = {
+          [selected.mediaType]: {},
+        };
+      }
+
+      return {
+        response,
+
+        issues: [
+          createResponseIssue(
+            route,
+            status,
+
+            "OPENAPI_RESPONSE_MEDIA_TYPE_CONFLICT",
+
+            `OpenAPI response media type "${metadata.mediaType}" contradicts runtime media type "${runtimeMediaType}" for ${route.method} ${route.path} status ${status}.`,
+          ),
+        ],
+      };
+    }
+
+    if (selected.mediaType !== undefined) {
+      response.content = {
+        [selected.mediaType]: {},
+      };
+    }
+
+    return {
+      response,
+
+      issues: [],
+    };
+  }
+
+  /*
+   * Explicit OpenAPI schema metadata bypasses
+   * Standard JSON Schema conversion.
+   */
+  if (metadata?.schema !== undefined) {
+    let prepared: ResolvedJSONSchema;
+
+    try {
+      prepared = prepareSchemaOccurrence(
+        route,
+
+        {
+          kind: "response",
+
+          status,
+        },
+
+        cloneOpenAPIJSONSchema(metadata.schema),
+      );
+    } catch (cause) {
+      return {
+        response,
+
+        issues: [
+          createResponseIssue(
+            route,
+            status,
+
+            schemaResourceIssueCode(cause),
+
+            `Failed to prepare the OpenAPI response schema override for ${route.method} ${route.path} status ${status}: ${schemaResourceIssueDetail(cause)}`,
+
+            cause,
+          ),
+        ],
+      };
+    }
+
+    if (!hasRuntimeContract) {
+      const mediaType = metadata.mediaType ?? "application/json";
+
+      response.content = {
+        [mediaType]: {
+          schema: prepared,
+        },
+      };
+
+      return {
+        response,
+
+        issues: [],
+      };
+    }
+
+    const runtimeMediaType = runtimeExplicitMediaType(entry) ?? classifyAutoMediaType(prepared);
+
+    const selected = selectMediaType(metadata.mediaType, runtimeMediaType);
+
+    if (selected.conflict) {
+      if (selected.mediaType !== undefined) {
+        response.content = {
+          [selected.mediaType]: {
+            schema: prepared,
+          },
+        };
+      }
+
+      return {
+        response,
+
+        issues: [
+          createResponseIssue(
+            route,
+            status,
+
+            "OPENAPI_RESPONSE_MEDIA_TYPE_CONFLICT",
+
+            `OpenAPI response media type "${metadata.mediaType}" contradicts runtime media type "${runtimeMediaType}" for ${route.method} ${route.path} status ${status}.`,
+          ),
+        ],
+      };
+    }
+
+    if (selected.mediaType === undefined) {
+      return {
+        response,
+
+        issues: [
+          createResponseIssue(
+            route,
+            status,
+
+            "OPENAPI_RESPONSE_MEDIA_TYPE_AMBIGUOUS",
+
+            `The response schema for ${route.method} ${route.path} status ${status} does not determine whether Gelis AUTO serialization emits text or JSON.`,
+          ),
+        ],
+      };
+    }
+
+    response.content = {
+      [selected.mediaType]: {
+        schema: prepared,
+      },
+    };
+
+    return {
+      response,
+
+      issues: [],
+    };
+  }
+
+  /*
+   * No runtime response exists: metadata is a
+   * documentation-only response patch/addition.
+   *
+   * Without an explicit schema it remains opaque.
+   */
+  if (!hasRuntimeContract) {
+    if (metadata?.mediaType !== undefined) {
+      response.content = {
+        [metadata.mediaType]: {},
+      };
+    }
+
+    return {
+      response,
+
+      issues: [],
+    };
+  }
+
+  const schema = responseSchema(entry as Exclude<ResponseContract, undefined>);
 
   if (resolver === undefined) {
     return {
@@ -197,9 +415,36 @@ function projectResponse(
     };
   }
 
-  const mediaType = responseMediaType(entry, prepared);
+  const runtimeMediaType = runtimeExplicitMediaType(entry) ?? classifyAutoMediaType(prepared);
 
-  if (mediaType === undefined) {
+  const selected = selectMediaType(metadata?.mediaType, runtimeMediaType);
+
+  if (selected.conflict) {
+    if (selected.mediaType !== undefined) {
+      response.content = {
+        [selected.mediaType]: {
+          schema: prepared,
+        },
+      };
+    }
+
+    return {
+      response,
+
+      issues: [
+        createResponseIssue(
+          route,
+          status,
+
+          "OPENAPI_RESPONSE_MEDIA_TYPE_CONFLICT",
+
+          `OpenAPI response media type "${metadata?.mediaType}" contradicts runtime media type "${runtimeMediaType}" for ${route.method} ${route.path} status ${status}.`,
+        ),
+      ],
+    };
+  }
+
+  if (selected.mediaType === undefined) {
     return {
       response,
 
@@ -217,15 +462,157 @@ function projectResponse(
   }
 
   response.content = {
-    [mediaType]: {
+    [selected.mediaType]: {
       schema: prepared,
     },
   };
 
   return {
     response,
+
     issues: [],
   };
+}
+
+function projectDefaultResponse(
+  route: ContractRouteSnapshot,
+
+  metadata: OpenAPIResponseMetadata | undefined,
+): {
+  readonly response: ProjectedResponseObject;
+
+  readonly issues: OpenAPIGenerationIssue[];
+} {
+  const response: ProjectedResponseObject = {
+    description: metadata?.description ?? "Undocumented response",
+  };
+
+  if (metadata === undefined) {
+    return {
+      response,
+
+      issues: [],
+    };
+  }
+
+  if (metadata.opaque === true) {
+    if (metadata.mediaType !== undefined) {
+      response.content = {
+        [metadata.mediaType]: {},
+      };
+    }
+
+    return {
+      response,
+
+      issues: [],
+    };
+  }
+
+  if (metadata.schema !== undefined) {
+    let prepared: ResolvedJSONSchema;
+
+    try {
+      prepared = prepareSchemaOccurrence(
+        route,
+
+        {
+          kind: "response",
+
+          status: "default",
+        },
+
+        cloneOpenAPIJSONSchema(metadata.schema),
+      );
+    } catch (cause) {
+      return {
+        response,
+
+        issues: [
+          createResponseIssue(
+            route,
+            "default",
+
+            schemaResourceIssueCode(cause),
+
+            `Failed to prepare the OpenAPI default response schema override for ${route.method} ${route.path}: ${schemaResourceIssueDetail(cause)}`,
+
+            cause,
+          ),
+        ],
+      };
+    }
+
+    const mediaType = metadata.mediaType ?? "application/json";
+
+    response.content = {
+      [mediaType]: {
+        schema: prepared,
+      },
+    };
+
+    return {
+      response,
+
+      issues: [],
+    };
+  }
+
+  if (metadata.mediaType !== undefined) {
+    response.content = {
+      [metadata.mediaType]: {},
+    };
+  }
+
+  return {
+    response,
+
+    issues: [],
+  };
+}
+
+function collectNumericStatuses(
+  declared: ContractRouteSnapshot["responses"],
+
+  metadata: OpenAPIResponseMetadataMap | undefined,
+): number[] {
+  const statuses = new Set<number>();
+
+  if (declared !== undefined) {
+    for (const key of Object.keys(declared)) {
+      const status = Number(key);
+
+      if (Number.isFinite(status)) {
+        statuses.add(status);
+      }
+    }
+  }
+
+  if (metadata !== undefined) {
+    for (const key of Object.keys(metadata)) {
+      if (key === "default") {
+        continue;
+      }
+
+      const status = Number(key);
+
+      if (Number.isFinite(status)) {
+        statuses.add(status);
+      }
+    }
+  }
+
+  return [...statuses].sort(compareNumbers);
+}
+
+function getResponseMetadata(route: ContractRouteSnapshot): OpenAPIResponseMetadataMap | undefined {
+  const openapi = route.openapi;
+
+  if (openapi === undefined || openapi === false) {
+    return undefined;
+  }
+
+  return openapi.responses;
 }
 
 function responseSchema(entry: Exclude<ResponseContract, undefined>): StandardSchemaV1 {
@@ -236,24 +623,56 @@ function responseSchema(entry: Exclude<ResponseContract, undefined>): StandardSc
   return entry.schema;
 }
 
-function responseMediaType(
-  entry: Exclude<ResponseContract, undefined>,
-
-  schema: ResolvedJSONSchema,
-): string | undefined {
-  if (!isStandardSchema(entry)) {
-    const descriptor: ResponseDescriptor = entry;
-
-    if (descriptor.serialize === "json") {
-      return descriptor.contentType ?? "application/json";
-    }
-
-    if (descriptor.serialize === "text") {
-      return descriptor.contentType ?? "text/plain";
-    }
+function runtimeExplicitMediaType(entry: ResponseContract): string | undefined {
+  if (entry === undefined || isStandardSchema(entry)) {
+    return undefined;
   }
 
-  return classifyAutoMediaType(schema);
+  const descriptor: ResponseDescriptor = entry;
+
+  if (descriptor.serialize === "json") {
+    return descriptor.contentType ?? "application/json";
+  }
+
+  if (descriptor.serialize === "text") {
+    return descriptor.contentType ?? "text/plain";
+  }
+
+  return undefined;
+}
+
+function selectMediaType(
+  metadataMediaType: string | undefined,
+
+  runtimeMediaType: string | undefined,
+): {
+  readonly mediaType: string | undefined;
+
+  readonly conflict: boolean;
+} {
+  if (
+    metadataMediaType !== undefined &&
+    runtimeMediaType !== undefined &&
+    normalizeMediaType(metadataMediaType) !== normalizeMediaType(runtimeMediaType)
+  ) {
+    return {
+      mediaType: runtimeMediaType,
+
+      conflict: true,
+    };
+  }
+
+  return {
+    mediaType: metadataMediaType ?? runtimeMediaType,
+
+    conflict: false,
+  };
+}
+
+function normalizeMediaType(value: string): string {
+  const separator = value.indexOf(";");
+
+  return (separator === -1 ? value : value.slice(0, separator)).trim().toLowerCase();
 }
 
 function classifyAutoMediaType(schema: ResolvedJSONSchema): string | undefined {
@@ -321,14 +740,40 @@ function isDefiniteJSONType(type: unknown): boolean {
   );
 }
 
+function cloneOpenAPIJSONSchema(schema: OpenAPIJSONSchema): ResolvedJSONSchema {
+  if (typeof schema === "boolean") {
+    return schema;
+  }
+
+  const cloned = structuredClone(schema);
+
+  if (!isRecord(cloned)) {
+    throw new TypeError("OpenAPI response schema override must be a JSON Schema object or boolean schema.");
+  }
+
+  return cloned;
+}
+
 function isStandardSchema(value: unknown): value is StandardSchemaV1 {
   return typeof value === "object" && value !== null && "~standard" in value;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function hasOwn(
+  value: object,
+
+  key: PropertyKey,
+): boolean {
+  return Object.prototype.hasOwnProperty.call(value, key);
 }
 
 function createResponseIssue(
   route: ContractRouteSnapshot,
 
-  status: number,
+  status: ResponseStatus,
 
   code: string,
 

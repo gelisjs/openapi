@@ -21,7 +21,7 @@ export type SchemaOccurrence =
   | {
       readonly kind: "response";
 
-      readonly status: number;
+      readonly status: number | "default";
     };
 
 const SYNTHETIC_SCHEMA_ORIGIN = "https://schemas.gelis.invalid/openapi";
