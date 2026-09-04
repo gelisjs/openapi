@@ -73,6 +73,36 @@ describe("OpenAPI JSON Schema resources", () => {
     }
   });
 
+  test("still validates nested dialects after synthetic-base analysis is satisfied", () => {
+    try {
+      prepareSchemaResource(
+        {
+          $ref: "#/$defs/value",
+
+          $defs: {
+            value: {
+              $schema: 42,
+
+              type: "string",
+            },
+          },
+        },
+
+        "https://schemas.gelis.invalid/test/nested-dialect",
+      );
+
+      throw new Error("Expected nested dialect failure");
+    } catch (cause) {
+      expect(cause).toBeInstanceOf(SchemaResourceError);
+
+      if (!(cause instanceof SchemaResourceError)) {
+        throw cause;
+      }
+
+      expect(cause.code).toBe("OPENAPI_SCHEMA_RESOURCE_ID_INVALID");
+    }
+  });
+
   test("preserves recursive local refs and adds a deterministic synthetic resource id", () => {
     const source = {
       $defs: {
