@@ -1,3 +1,5 @@
+export { generateOpenAPI } from "./generate";
+
 export { OpenAPIGenerationError } from "./errors";
 
 export { OPENAPI_JSON_SCHEMA_DIALECT, OPENAPI_VERSION } from "./types";

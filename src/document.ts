@@ -12,8 +12,8 @@ import type {
  * Internal root-document constructor.
  *
  * It intentionally is not exported from the
- * package root. generateOpenAPI() will become
- * the public construction API.
+ * package root. generateOpenAPI() is the public
+ * construction API.
  */
 export function createOpenAPIRoot(options: OpenAPIGenerationOptions): OpenAPIDocument {
   const servers = options.servers;

@@ -1,4 +1,6 @@
-import { OPENAPI_JSON_SCHEMA_DIALECT, OPENAPI_VERSION, OpenAPIGenerationError } from "../../src";
+import { Gelis } from "gelis";
+
+import { generateOpenAPI, OPENAPI_JSON_SCHEMA_DIALECT, OPENAPI_VERSION, OpenAPIGenerationError } from "../../src";
 
 import type { OpenAPIDocument, OpenAPIGenerationIssue, OpenAPIGenerationOptions, OpenAPIHttpMethod } from "../../src";
 
@@ -23,6 +25,12 @@ const minimalOptions: OpenAPIGenerationOptions = {
     version: "1.0.0",
   },
 };
+
+const app = new Gelis();
+
+const generated = generateOpenAPI(app, minimalOptions);
+
+type _GeneratedDocument = Expect<Equal<typeof generated, OpenAPIDocument>>;
 
 const fullIssue: OpenAPIGenerationIssue = {
   code: "TEST",
@@ -51,9 +59,15 @@ const missingVersion: OpenAPIGenerationOptions = {
   },
 };
 
+// @ts-expect-error options are required
+generateOpenAPI(app);
+
 type PublicAPI = typeof import("../../src/index");
+
+type _HasGenerator = Expect<Equal<"generateOpenAPI" extends keyof PublicAPI ? true : false, true>>;
 
 type _NoInternalRootBuilder = Expect<Equal<"createOpenAPIRoot" extends keyof PublicAPI ? true : false, false>>;
 
 void minimalOptions;
+void generated;
 void missingVersion;
