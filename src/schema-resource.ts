@@ -39,6 +39,12 @@ interface ResourceGraph {
   readonly resourcesByUri: Map<string, SchemaResource>;
 }
 
+interface SchemaResourceAnalysis {
+  readonly hasResourceSemantics: boolean;
+
+  readonly needsSyntheticBase: boolean;
+}
+
 const ANCHOR_PATTERN = /^[A-Za-z_][A-Za-z0-9._-]*$/;
 
 const SINGLE_SCHEMA_KEYWORDS = [
@@ -70,12 +76,26 @@ export function prepareSchemaResource(
 
   const prepared = cloneRecord(schema);
 
+  const analysis = analyzeSchemaResource(prepared);
+
+  /*
+   * Most ordinary JSON Schemas have no resource
+   * identity/reference semantics at all.
+   *
+   * The detached clone is already the complete final
+   * occurrence in that case. Avoid constructing a
+   * resource graph and walking the schema again.
+   */
+  if (!analysis.hasResourceSemantics) {
+    return prepared;
+  }
+
   const rootId = prepared["$id"];
 
   let syntheticRoot = false;
 
   if (rootId === undefined) {
-    if (needsSyntheticBase(prepared)) {
+    if (analysis.needsSyntheticBase) {
       validateAbsoluteResourceId(syntheticId, "Synthetic schema resource id");
 
       prepared["$id"] = syntheticId;
@@ -106,42 +126,50 @@ export function prepareSchemaResource(
   return prepared;
 }
 
-function needsSyntheticBase(root: Record<string, unknown>): boolean {
+function analyzeSchemaResource(root: Record<string, unknown>): SchemaResourceAnalysis {
   const visited = new WeakSet<object>();
 
-  let needed = false;
+  let hasResourceSemantics = false;
+
+  let needsSyntheticBase = false;
 
   visitSchemaTree(
     root,
 
     (schema, isRoot) => {
-      if (needed) {
-        return;
-      }
+      /*
+       * Dialect validity applies even when the schema
+       * takes the simple fast path.
+       */
+      validateDialect(schema);
 
-      if (!isRoot) {
-        const id = schema["$id"];
+      const id = schema["$id"];
 
-        if (typeof id === "string" && !isAbsoluteUri(id)) {
-          needed = true;
+      if (id !== undefined) {
+        hasResourceSemantics = true;
 
-          return;
+        if (!isRoot && typeof id === "string" && !isAbsoluteUri(id)) {
+          needsSyntheticBase = true;
         }
       }
 
       if (schema["$anchor"] !== undefined || schema["$dynamicAnchor"] !== undefined) {
-        needed = true;
+        hasResourceSemantics = true;
 
-        return;
+        needsSyntheticBase = true;
       }
 
       for (const keyword of ["$ref", "$dynamicRef"] as const) {
         const reference = schema[keyword];
 
-        if (typeof reference === "string" && !isAbsoluteUri(reference)) {
-          needed = true;
+        if (reference === undefined) {
+          continue;
+        }
 
-          return;
+        hasResourceSemantics = true;
+
+        if (typeof reference === "string" && !isAbsoluteUri(reference)) {
+          needsSyntheticBase = true;
         }
       }
     },
@@ -149,7 +177,10 @@ function needsSyntheticBase(root: Record<string, unknown>): boolean {
     visited,
   );
 
-  return needed;
+  return {
+    hasResourceSemantics,
+    needsSyntheticBase,
+  };
 }
 
 function collectResourceGraph(
@@ -207,8 +238,6 @@ function collectResourceGraph(
     }
 
     nodeResources.set(schema, resource);
-
-    validateDialect(schema);
 
     registerAnchor(schema, "$anchor", resource);
 

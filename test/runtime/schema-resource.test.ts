@@ -3,6 +3,76 @@ import { describe, expect, test } from "bun:test";
 import { prepareSchemaResource, SchemaResourceError } from "../../src/schema-resource";
 
 describe("OpenAPI JSON Schema resources", () => {
+  test("preserves detached simple schemas without inventing resource identity", () => {
+    const source = {
+      type: "object",
+
+      properties: {
+        name: {
+          type: "string",
+        },
+
+        tags: {
+          type: "array",
+
+          items: {
+            type: "string",
+          },
+        },
+      },
+
+      required: ["name"],
+    };
+
+    const prepared = prepareSchemaResource(
+      source,
+
+      "https://schemas.gelis.invalid/test/simple",
+    );
+
+    expect(prepared).toEqual(source);
+
+    expect(prepared).not.toBe(source);
+
+    expect((prepared as Record<string, unknown>)["$id"]).toBeUndefined();
+
+    if (typeof prepared !== "object" || prepared === null) {
+      throw new Error("Expected prepared object schema.");
+    }
+
+    expect(prepared["properties"]).not.toBe(source.properties);
+  });
+
+  test("validates dialect keywords on the simple resource fast path", () => {
+    try {
+      prepareSchemaResource(
+        {
+          $schema: 42,
+
+          type: "object",
+
+          properties: {
+            value: {
+              type: "string",
+            },
+          },
+        },
+
+        "https://schemas.gelis.invalid/test/simple",
+      );
+
+      throw new Error("Expected dialect failure");
+    } catch (cause) {
+      expect(cause).toBeInstanceOf(SchemaResourceError);
+
+      if (!(cause instanceof SchemaResourceError)) {
+        throw cause;
+      }
+
+      expect(cause.code).toBe("OPENAPI_SCHEMA_RESOURCE_ID_INVALID");
+    }
+  });
+
   test("preserves recursive local refs and adds a deterministic synthetic resource id", () => {
     const source = {
       $defs: {
