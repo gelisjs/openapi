@@ -1,4 +1,10 @@
-import type { ApplicationContractSnapshot, ContractRouteSnapshot, HttpMethod } from "gelis";
+import type {
+  ApplicationContractSnapshot,
+  ContractRouteSnapshot,
+  HttpMethod,
+  OpenAPIJSONSchema,
+  OpenAPIRouteMetadata,
+} from "gelis";
 
 import { projectQueryParameters } from "./query";
 
@@ -10,11 +16,13 @@ import type { ProjectedRequestBodyObject } from "./request-body";
 
 import { getInputSchemaResolver, getOutputSchemaResolver } from "./schema-resolution";
 
-import type { SchemaResolver } from "./schema-resolution";
+import type { ResolvedJSONSchema, SchemaResolver } from "./schema-resolution";
 
 import { projectResponses } from "./response";
 
 import type { ProjectedResponsesObject } from "./response";
+
+import { prepareSchemaOccurrence, schemaResourceIssueCode, schemaResourceIssueDetail } from "./schema-occurrence";
 
 import { createStandardJSONSchemaResolver } from "./standard-json-schema";
 
@@ -29,14 +37,26 @@ export interface ProjectedPathParameterObject {
 
   required: true;
 
-  schema: {
-    type: "string";
-  };
+  description?: string;
+
+  deprecated?: boolean;
+
+  schema: ResolvedJSONSchema;
 }
 
 export type ProjectedParameterObject = ProjectedPathParameterObject | ProjectedQueryParameterObject;
 
 export interface ProjectedOperationObject {
+  summary?: string;
+
+  description?: string;
+
+  operationId?: string;
+
+  tags?: string[];
+
+  deprecated?: boolean;
+
   parameters?: ProjectedParameterObject[];
 
   requestBody?: ProjectedRequestBodyObject;
@@ -97,8 +117,21 @@ export function projectPaths(
 
   const templateOwners = new Map<string, TemplateOwner>();
 
+  const operationIds = new Map<
+    string,
+    {
+      readonly method: HttpMethod;
+
+      readonly path: string;
+    }
+  >();
+
   for (const candidate of candidates) {
     const { route, openapiPath, templateShape, parameterNames } = candidate;
+
+    const metadata = getRouteMetadata(route);
+
+    validateOperationId(route, metadata, operationIds, issues);
 
     const queryProjection = projectQueryParameters(route, inputResolver);
 
@@ -164,13 +197,15 @@ export function projectPaths(
       continue;
     }
 
-    const pathParameters = createPathParameters(parameterNames);
+    const pathParameters = createPathParameters(route, parameterNames, issues);
 
     const parameters: ProjectedParameterObject[] = [...pathParameters, ...queryProjection.parameters];
 
     const operation: ProjectedOperationObject = {
       responses: responseProjection.responses,
     };
+
+    applyOperationMetadata(operation, metadata);
 
     if (parameters.length > 0) {
       operation.parameters = parameters;
@@ -251,10 +286,18 @@ function projectPath(path: string): {
   };
 }
 
-function createPathParameters(names: readonly string[]): ProjectedPathParameterObject[] {
+function createPathParameters(
+  route: ContractRouteSnapshot,
+
+  names: readonly string[],
+
+  issues: OpenAPIGenerationIssue[],
+): ProjectedPathParameterObject[] {
   const parameters: ProjectedPathParameterObject[] = [];
 
   const seen = new Set<string>();
+
+  const metadata = getRouteMetadata(route)?.request?.params;
 
   for (const name of names) {
     if (seen.has(name)) {
@@ -263,20 +306,197 @@ function createPathParameters(names: readonly string[]): ProjectedPathParameterO
 
     seen.add(name);
 
-    parameters.push({
+    const patch = metadata?.[name];
+
+    let schema: ResolvedJSONSchema = {
+      type: "string",
+    };
+
+    if (patch?.schema !== undefined) {
+      try {
+        schema = prepareSchemaOccurrence(
+          route,
+
+          {
+            kind: "path",
+
+            name,
+          },
+
+          cloneOpenAPIJSONSchema(patch.schema),
+        );
+      } catch (cause) {
+        issues.push({
+          code: schemaResourceIssueCode(cause),
+
+          method: route.method,
+
+          path: route.path,
+
+          location: `request.params.${name}`,
+
+          message: `Failed to prepare path parameter schema "${name}" for ${route.method} ${route.path}: ${schemaResourceIssueDetail(cause)}`,
+
+          ...(cause === undefined
+            ? {}
+            : {
+                cause,
+              }),
+        });
+      }
+    }
+
+    const parameter: ProjectedPathParameterObject = {
       name,
 
       in: "path",
 
       required: true,
 
-      schema: {
-        type: "string",
-      },
-    });
+      schema,
+    };
+
+    if (patch?.description !== undefined) {
+      parameter.description = patch.description;
+    }
+
+    if (patch?.deprecated !== undefined) {
+      parameter.deprecated = patch.deprecated;
+    }
+
+    parameters.push(parameter);
+  }
+
+  if (metadata !== undefined) {
+    const patchedNames = Object.keys(metadata).sort(compareStrings);
+
+    for (const name of patchedNames) {
+      if (seen.has(name)) {
+        continue;
+      }
+
+      issues.push({
+        code: "OPENAPI_PATH_PARAMETER_UNKNOWN",
+
+        method: route.method,
+
+        path: route.path,
+
+        location: `request.params.${name}`,
+
+        message: `OpenAPI path metadata references unknown path parameter "${name}" on ${route.method} ${route.path}.`,
+      });
+    }
   }
 
   return parameters;
+}
+
+function getRouteMetadata(route: ContractRouteSnapshot): OpenAPIRouteMetadata | undefined {
+  if (route.openapi === undefined || route.openapi === false) {
+    return undefined;
+  }
+
+  return route.openapi;
+}
+
+function applyOperationMetadata(
+  operation: ProjectedOperationObject,
+
+  metadata: OpenAPIRouteMetadata | undefined,
+): void {
+  if (metadata === undefined) {
+    return;
+  }
+
+  if (metadata.summary !== undefined) {
+    operation.summary = metadata.summary;
+  }
+
+  if (metadata.description !== undefined) {
+    operation.description = metadata.description;
+  }
+
+  if (metadata.operationId !== undefined) {
+    operation.operationId = metadata.operationId;
+  }
+
+  if (metadata.tags !== undefined) {
+    operation.tags = [...metadata.tags];
+  }
+
+  if (metadata.deprecated !== undefined) {
+    operation.deprecated = metadata.deprecated;
+  }
+}
+
+function validateOperationId(
+  route: ContractRouteSnapshot,
+
+  metadata: OpenAPIRouteMetadata | undefined,
+
+  operationIds: Map<
+    string,
+    {
+      readonly method: HttpMethod;
+
+      readonly path: string;
+    }
+  >,
+
+  issues: OpenAPIGenerationIssue[],
+): void {
+  const operationId = metadata?.operationId;
+
+  if (operationId === undefined) {
+    return;
+  }
+
+  const existing = operationIds.get(operationId);
+
+  if (existing === undefined) {
+    operationIds.set(
+      operationId,
+
+      {
+        method: route.method,
+
+        path: route.path,
+      },
+    );
+
+    return;
+  }
+
+  issues.push({
+    code: "OPENAPI_OPERATION_ID_DUPLICATE",
+
+    method: route.method,
+
+    path: route.path,
+
+    location: "operationId",
+
+    message: `OpenAPI operationId "${operationId}" on ${route.method} ${route.path} is already used by ${existing.method} ${existing.path}.`,
+  });
+}
+
+function cloneOpenAPIJSONSchema(schema: OpenAPIJSONSchema): ResolvedJSONSchema {
+  if (typeof schema === "boolean") {
+    return schema;
+  }
+
+  const cloned = structuredClone(schema);
+
+  if (!isRecord(cloned)) {
+    throw new TypeError("OpenAPI schema override must be a JSON Schema object or boolean schema.");
+  }
+
+  return cloned;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function finalizePaths(

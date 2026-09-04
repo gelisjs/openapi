@@ -6,6 +6,11 @@ import type { ResolvedJSONSchema } from "./schema-resolution";
 
 export type SchemaOccurrence =
   | {
+      readonly kind: "path";
+
+      readonly name: string;
+    }
+  | {
       readonly kind: "query";
 
       readonly name: string;
@@ -55,6 +60,8 @@ function createSyntheticSchemaResourceId(
   const routeBase = `${SYNTHETIC_SCHEMA_ORIGIN}/${route.method.toLowerCase()}/${encodeURIComponent(route.path)}`;
 
   switch (occurrence.kind) {
+    case "path":
+      return `${routeBase}/request/path/${encodeURIComponent(occurrence.name)}`;
     case "query":
       return `${routeBase}/request/query/${encodeURIComponent(occurrence.name)}`;
 
