@@ -139,27 +139,9 @@ function analyzeSchemaResource(root: Record<string, unknown>): SchemaResourceAna
     (schema, isRoot) => {
       /*
        * Dialect validity applies even when the schema
-       * takes the simple fast path and must continue
-       * to be checked after resource analysis has
-       * otherwise reached a terminal state.
+       * takes the simple fast path.
        */
       validateDialect(schema);
-
-      /*
-       * Once a synthetic base is required, both
-       * resource-analysis answers are already final:
-       *
-       * hasResourceSemantics = true
-       * needsSyntheticBase   = true
-       *
-       * visitSchemaTree() must still visit descendants
-       * so their $schema values are validated, but the
-       * more expensive resource keyword checks and URL
-       * parsing no longer provide additional information.
-       */
-      if (needsSyntheticBase) {
-        return;
-      }
 
       const id = schema["$id"];
 
