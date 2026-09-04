@@ -288,7 +288,12 @@ describe("OpenAPI response projection", () => {
   test("rejects ambiguous AUTO response media types instead of guessing", () => {
     const app = new Gelis();
 
-    const schema = createSchema<unknown>();
+    const schema = createSchema<
+      | string
+      | {
+          ok: boolean;
+        }
+    >();
 
     app.get(
       "/ambiguous",

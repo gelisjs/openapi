@@ -11,17 +11,20 @@ export interface OutputSchemaResolver {
 }
 
 /*
- * B12-B14 consume direction-specific capabilities.
+ * Directional capabilities are optional while
+ * B12-B14 are assembled incrementally.
  *
- * B15 will provide one production resolver
- * implementing both directions with Standard
- * JSON Schema conversion and per-generation
- * identity memoization.
+ * B15 will provide both capabilities through one
+ * production per-generation resolver.
  */
-export type SchemaResolver = Partial<InputSchemaResolver & OutputSchemaResolver>;
+export interface SchemaResolver {
+  readonly resolveInput?: InputSchemaResolver["resolveInput"];
+
+  readonly resolveOutput?: OutputSchemaResolver["resolveOutput"];
+}
 
 export function getInputSchemaResolver(resolver: SchemaResolver | undefined): InputSchemaResolver | undefined {
-  if (resolver === undefined || typeof resolver.resolveInput !== "function") {
+  if (resolver === undefined || !hasInputSchemaResolver(resolver)) {
     return undefined;
   }
 
@@ -29,9 +32,17 @@ export function getInputSchemaResolver(resolver: SchemaResolver | undefined): In
 }
 
 export function getOutputSchemaResolver(resolver: SchemaResolver | undefined): OutputSchemaResolver | undefined {
-  if (resolver === undefined || typeof resolver.resolveOutput !== "function") {
+  if (resolver === undefined || !hasOutputSchemaResolver(resolver)) {
     return undefined;
   }
 
   return resolver;
+}
+
+function hasInputSchemaResolver(resolver: SchemaResolver): resolver is SchemaResolver & InputSchemaResolver {
+  return typeof resolver.resolveInput === "function";
+}
+
+function hasOutputSchemaResolver(resolver: SchemaResolver): resolver is SchemaResolver & OutputSchemaResolver {
+  return typeof resolver.resolveOutput === "function";
 }
