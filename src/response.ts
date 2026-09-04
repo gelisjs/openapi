@@ -4,6 +4,8 @@ import type { OutputSchemaResolver, ResolvedJSONSchema } from "./schema-resoluti
 
 import type { OpenAPIGenerationIssue } from "./types";
 
+import { prepareSchemaOccurrence, schemaResourceIssueCode, schemaResourceIssueDetail } from "./schema-occurrence";
+
 export interface ProjectedResponseMediaTypeObject {
   schema: ResolvedJSONSchema;
 }
@@ -162,7 +164,40 @@ function projectResponse(
     };
   }
 
-  const mediaType = responseMediaType(entry, resolved);
+  let prepared: ResolvedJSONSchema;
+
+  try {
+    prepared = prepareSchemaOccurrence(
+      route,
+
+      {
+        kind: "response",
+
+        status,
+      },
+
+      resolved,
+    );
+  } catch (cause) {
+    return {
+      response,
+
+      issues: [
+        createResponseIssue(
+          route,
+          status,
+
+          schemaResourceIssueCode(cause),
+
+          `Failed to prepare the response schema for ${route.method} ${route.path} status ${status}: ${schemaResourceIssueDetail(cause)}`,
+
+          cause,
+        ),
+      ],
+    };
+  }
+
+  const mediaType = responseMediaType(entry, prepared);
 
   if (mediaType === undefined) {
     return {
@@ -183,7 +218,7 @@ function projectResponse(
 
   response.content = {
     [mediaType]: {
-      schema: resolved,
+      schema: prepared,
     },
   };
 

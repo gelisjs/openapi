@@ -4,6 +4,8 @@ import type { InputSchemaResolver, ResolvedJSONSchema } from "./schema-resolutio
 
 import type { OpenAPIGenerationIssue } from "./types";
 
+import { prepareSchemaOccurrence, schemaResourceIssueCode, schemaResourceIssueDetail } from "./schema-occurrence";
+
 export interface ProjectedMediaTypeObject {
   schema: ResolvedJSONSchema;
 }
@@ -75,13 +77,43 @@ export function projectRequestBody(
     };
   }
 
+  let preparedSchema: ResolvedJSONSchema;
+
+  try {
+    preparedSchema = prepareSchemaOccurrence(
+      route,
+
+      {
+        kind: "body",
+      },
+
+      schema,
+    );
+  } catch (cause) {
+    return {
+      requestBody: undefined,
+
+      issues: [
+        createRequestBodyIssue(
+          route,
+
+          schemaResourceIssueCode(cause),
+
+          `Failed to prepare the request body schema for ${route.method} ${route.path}: ${schemaResourceIssueDetail(cause)}`,
+
+          cause,
+        ),
+      ],
+    };
+  }
+
   return {
     requestBody: {
       required: true,
 
       content: {
         "application/json": {
-          schema,
+          schema: preparedSchema,
         },
       },
     },

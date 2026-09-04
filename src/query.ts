@@ -2,6 +2,8 @@ import type { ContractRouteSnapshot } from "gelis";
 
 import type { InputSchemaResolver, ResolvedJSONSchema } from "./schema-resolution";
 
+import { prepareSchemaOccurrence, schemaResourceIssueCode, schemaResourceIssueDetail } from "./schema-occurrence";
+
 import type { OpenAPIGenerationIssue } from "./types";
 
 export interface ProjectedQueryParameterObject {
@@ -117,10 +119,48 @@ export function projectQueryParameters(
 
   const parameters: ProjectedQueryParameterObject[] = [];
 
+  const issues: OpenAPIGenerationIssue[] = [];
+
   for (const name of names) {
     const propertySchema = decomposition.properties[name];
 
     if (propertySchema === undefined) {
+      continue;
+    }
+
+    let preparedSchema: ResolvedJSONSchema;
+
+    try {
+      preparedSchema = prepareSchemaOccurrence(
+        route,
+
+        {
+          kind: "query",
+
+          name,
+        },
+
+        propertySchema,
+      );
+    } catch (cause) {
+      issues.push({
+        code: schemaResourceIssueCode(cause),
+
+        method: route.method,
+
+        path: route.path,
+
+        location: `request.query.${name}`,
+
+        message: `Failed to prepare query parameter schema "${name}" for ${route.method} ${route.path}: ${schemaResourceIssueDetail(cause)}`,
+
+        ...(cause === undefined
+          ? {}
+          : {
+              cause,
+            }),
+      });
+
       continue;
     }
 
@@ -129,14 +169,14 @@ export function projectQueryParameters(
 
       in: "query",
 
-      schema: propertySchema,
+      schema: preparedSchema,
     };
 
     if (decomposition.required.has(name)) {
       parameter.required = true;
     }
 
-    if (schemaAllowsArray(propertySchema)) {
+    if (schemaAllowsArray(preparedSchema)) {
       parameter.style = "form";
 
       parameter.explode = true;
@@ -147,7 +187,7 @@ export function projectQueryParameters(
 
   return {
     parameters,
-    issues: [],
+    issues,
   };
 }
 
