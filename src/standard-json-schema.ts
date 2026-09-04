@@ -20,18 +20,62 @@ type CachedConversion =
       readonly cause: unknown;
     };
 
+interface ResolverOptions {
+  readonly detachResults: boolean;
+}
+
+/*
+ * General-purpose resolver semantics.
+ *
+ * Every successful resolve returns a detached
+ * occurrence. This remains useful for direct/internal
+ * callers that may mutate the returned schema.
+ */
 export function createStandardJSONSchemaResolver(): StandardJSONSchemaResolver {
+  return createResolver({
+    detachResults: true,
+  });
+}
+
+/*
+ * Production OpenAPI projection resolver.
+ *
+ * The cached canonical schema is already detached
+ * from converter-owned state. Projection immediately
+ * passes this borrowed canonical value through
+ * prepareSchemaResource(), which creates the final
+ * detached occurrence.
+ *
+ * Avoiding an intermediate occurrence clone removes
+ * one structuredClone() per projected schema while
+ * retaining:
+ *
+ * converter-owned state
+ *   != cached canonical state
+ *   != final document occurrence
+ *
+ * Callers must treat values returned by this resolver
+ * as borrowed/read-only and must not expose or mutate
+ * them directly.
+ */
+export function createStandardJSONSchemaProjectionResolver(): StandardJSONSchemaResolver {
+  return createResolver({
+    detachResults: false,
+  });
+}
+
+function createResolver(options: ResolverOptions): StandardJSONSchemaResolver {
   const inputCache = new WeakMap<object, CachedConversion>();
 
   const outputCache = new WeakMap<object, CachedConversion>();
 
   return {
     resolveInput(schema) {
-      return resolveSchema(schema, "input", inputCache);
+      return resolveSchema(schema, "input", inputCache, options.detachResults);
     },
 
     resolveOutput(schema) {
-      return resolveSchema(schema, "output", outputCache);
+      return resolveSchema(schema, "output", outputCache, options.detachResults);
     },
   };
 }
@@ -42,6 +86,8 @@ function resolveSchema(
   direction: ConversionDirection,
 
   cache: WeakMap<object, CachedConversion>,
+
+  detachResult: boolean,
 ): ResolvedJSONSchema {
   const cached = cache.get(schema);
 
@@ -50,7 +96,7 @@ function resolveSchema(
       throw cached.cause;
     }
 
-    return cloneSchema(cached.schema);
+    return resultSchema(cached.schema, detachResult);
   }
 
   try {
@@ -74,15 +120,10 @@ function resolveSchema(
     }
 
     /*
-     * Never retain the converter-owned object.
+     * Never retain converter-owned state.
      *
-     * The cache owns a detached canonical copy,
-     * while every consumer receives another copy.
-     * This gives:
-     *
-     * schema source
-     *   != cache state
-     *   != generated occurrence
+     * This canonical copy belongs exclusively to the
+     * resolver cache for this generation.
      */
     const canonical = cloneSchema(converted);
 
@@ -96,15 +137,12 @@ function resolveSchema(
       },
     );
 
-    return cloneSchema(canonical);
+    return resultSchema(canonical, detachResult);
   } catch (cause) {
     /*
-     * A schema identity/direction is attempted once
-     * per resolver lifetime, including failures.
-     *
-     * This prevents one unsupported or throwing
-     * converter from being repeatedly executed for
-     * every route occurrence.
+     * Converter failures are memoized by schema
+     * identity and direction exactly as successful
+     * conversions are.
      */
     cache.set(
       schema,
@@ -118,6 +156,14 @@ function resolveSchema(
 
     throw cause;
   }
+}
+
+function resultSchema(
+  canonical: Record<string, unknown>,
+
+  detach: boolean,
+): Record<string, unknown> {
+  return detach ? cloneSchema(canonical) : canonical;
 }
 
 function hasStandardJSONSchemaCapability(schema: StandardSchemaV1): schema is StandardSchemaV1 & StandardJSONSchemaV1 {

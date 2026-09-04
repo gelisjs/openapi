@@ -2,7 +2,10 @@ import type { StandardJSONSchemaV1, StandardSchemaV1 } from "gelis";
 
 import { prepareSchemaResource } from "../../src/schema-resource";
 
-import { createStandardJSONSchemaResolver } from "../../src/standard-json-schema";
+import {
+  createStandardJSONSchemaProjectionResolver,
+  createStandardJSONSchemaResolver,
+} from "../../src/standard-json-schema";
 
 interface Payload {
   readonly id: string;
@@ -114,6 +117,22 @@ const cases: readonly {
   },
 
   {
+    name: "resolver-projection-shared-input",
+
+    setup() {
+      const resolver = createStandardJSONSchemaProjectionResolver();
+
+      const schema = createSchema();
+
+      return () => {
+        const resolved = resolver.resolveInput(schema);
+
+        return countKeys(resolved);
+      };
+    },
+  },
+
+  {
     name: "resolver-unique-input",
 
     setup() {
@@ -145,7 +164,7 @@ const cases: readonly {
     name: "production-shared-pair",
 
     setup() {
-      const resolver = createStandardJSONSchemaResolver();
+      const resolver = createStandardJSONSchemaProjectionResolver();
 
       const schema = createSchema();
 
@@ -171,7 +190,7 @@ const cases: readonly {
     name: "production-unique-pair",
 
     setup() {
-      const resolver = createStandardJSONSchemaResolver();
+      const resolver = createStandardJSONSchemaProjectionResolver();
 
       const schemas = Array.from(
         {

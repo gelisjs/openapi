@@ -6,7 +6,11 @@ import type { StandardJSONSchemaV1, StandardSchemaV1 } from "gelis";
 
 import { projectPaths } from "../../src/path";
 
-import { createStandardJSONSchemaResolver, STANDARD_JSON_SCHEMA_TARGET } from "../../src/standard-json-schema";
+import {
+  createStandardJSONSchemaProjectionResolver,
+  createStandardJSONSchemaResolver,
+  STANDARD_JSON_SCHEMA_TARGET,
+} from "../../src/standard-json-schema";
 
 type TestValue = Record<string, unknown>;
 
@@ -131,6 +135,66 @@ describe("Standard JSON Schema resolution", () => {
     expect(calls).toBe(1);
 
     expect(second).toEqual({
+      type: "object",
+
+      properties: {
+        value: {
+          type: "string",
+        },
+      },
+    });
+  });
+
+  test("borrows detached canonical schemas only for production projection", () => {
+    const converterOwned: Record<string, unknown> = {
+      type: "object",
+
+      properties: {
+        value: {
+          type: "string",
+        },
+      },
+    };
+
+    let calls = 0;
+
+    const schema = createConvertibleSchema({
+      input() {
+        calls += 1;
+
+        return converterOwned;
+      },
+
+      output() {
+        return {
+          type: "object",
+        };
+      },
+    });
+
+    const resolver = createStandardJSONSchemaProjectionResolver();
+
+    const first = resolver.resolveInput(schema);
+
+    const second = resolver.resolveInput(schema);
+
+    expect(calls).toBe(1);
+
+    /*
+     * Projection mode intentionally borrows the
+     * resolver-owned canonical copy.
+     */
+    expect(first).toBe(second);
+
+    /*
+     * It must still never borrow converter-owned
+     * state.
+     */
+    expect(first).not.toBe(converterOwned);
+
+    converterOwned["type"] = "string";
+
+    expect(first).toEqual({
       type: "object",
 
       properties: {
@@ -296,6 +360,98 @@ describe("Standard JSON Schema resolution", () => {
           },
         },
       },
+    });
+  });
+
+  test("keeps final projected occurrences independently mutable with shared schema identity", () => {
+    let inputCalls = 0;
+
+    const schema = createConvertibleSchema({
+      input() {
+        inputCalls += 1;
+
+        return {
+          type: "object",
+
+          properties: {
+            value: {
+              type: "string",
+            },
+          },
+
+          required: ["value"],
+        };
+      },
+
+      output() {
+        return {
+          type: "object",
+        };
+      },
+    });
+
+    const app = new Gelis();
+
+    app.post(
+      "/first",
+
+      {
+        body: schema,
+      },
+
+      () => new Response(),
+    );
+
+    app.post(
+      "/second",
+
+      {
+        body: schema,
+      },
+
+      () => new Response(),
+    );
+
+    const result = projectPaths(inspectContract(app));
+
+    expect(result.issues).toEqual([]);
+
+    expect(inputCalls).toBe(1);
+
+    const first = result.paths["/first"]?.post?.requestBody?.content["application/json"]?.schema;
+
+    const second = result.paths["/second"]?.post?.requestBody?.content["application/json"]?.schema;
+
+    expect(first).not.toBe(second);
+
+    if (!isRecord(first) || !isRecord(second)) {
+      throw new Error("Expected projected object schemas.");
+    }
+
+    const firstProperties = first["properties"];
+
+    const secondProperties = second["properties"];
+
+    if (!isRecord(firstProperties) || !isRecord(secondProperties)) {
+      throw new Error("Expected projected schema properties.");
+    }
+
+    firstProperties["mutated"] = {
+      type: "boolean",
+    };
+
+    expect(secondProperties["mutated"]).toBeUndefined();
+
+    expect(second).toEqual({
+      type: "object",
+
+      properties: {
+        value: {
+          type: "string",
+        },
+      },
+
+      required: ["value"],
     });
   });
 
