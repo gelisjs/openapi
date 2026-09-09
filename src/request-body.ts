@@ -1,10 +1,21 @@
-import type { ContractRouteSnapshot, OpenAPIJSONSchema, OpenAPIRequestBodyMetadata } from "gelis";
+import type {
+  ContractRouteSnapshot,
+  OpenAPIJSONSchema,
+  OpenAPIRequestBodyMetadata,
+} from "gelis";
 
-import type { InputSchemaResolver, ResolvedJSONSchema } from "./schema-resolution";
+import type {
+  InputSchemaResolver,
+  ResolvedJSONSchema,
+} from "./schema-resolution";
 
 import type { OpenAPIGenerationIssue } from "./types";
 
-import { prepareSchemaOccurrence, schemaResourceIssueCode, schemaResourceIssueDetail } from "./schema-occurrence";
+import {
+  prepareSchemaOccurrence,
+  schemaResourceIssueCode,
+  schemaResourceIssueDetail,
+} from "./schema-occurrence";
 
 export interface ProjectedMediaTypeObject {
   schema?: ResolvedJSONSchema;
@@ -29,184 +40,248 @@ export function projectRequestBody(
 
   resolver: InputSchemaResolver | undefined,
 ): RequestBodyProjectionResult {
-  const body = route.body;
-
   const metadata = getRequestBodyMetadata(route);
 
-  if (body === undefined && metadata === undefined) {
-    return {
-      requestBody: undefined,
-
-      issues: [],
-    };
+  if (route.body === undefined) {
+    return projectDocumentationOnlyBody(route, metadata);
   }
 
-  const mediaType = metadata?.mediaType ?? "application/json";
+  return projectManagedBody(route, metadata, resolver);
+}
 
-  /*
-   * A runtime Gelis body contract parses JSON.
-   * Metadata may select application/json or a
-   * concrete application/*+json media type, but
-   * must not document a runtime contract as text,
-   * multipart, etc.
-   *
-   * Documentation-only bodies have no such
-   * restriction.
-   */
-  if (body !== undefined && metadata?.mediaType !== undefined && !isRuntimeJSONMediaType(metadata.mediaType)) {
-    return {
-      requestBody: undefined,
+function projectManagedBody(
+  route: ContractRouteSnapshot,
 
-      issues: [
+  metadata: OpenAPIRequestBodyMetadata | undefined,
+
+  resolver: InputSchemaResolver | undefined,
+): RequestBodyProjectionResult {
+  const body = route.body;
+
+  if (body === undefined) {
+    throw new TypeError("Managed request body projection requires a body schema");
+  }
+
+  const parser = route.bodyParser ?? "json";
+  const mediaTypes = managedMediaTypes(route, parser);
+  const issues: OpenAPIGenerationIssue[] = [];
+
+  if (metadata?.required === false) {
+    issues.push(
+      createRequestBodyIssue(
+        route,
+        "OPENAPI_REQUEST_BODY_REQUIRED_CONFLICT",
+        `OpenAPI request body metadata marks the managed body for ${route.method} ${route.path} as optional, but the Gelis runtime body contract is required.`,
+      ),
+    );
+  }
+
+  if (metadata?.mediaType !== undefined) {
+    if (
+      mediaTypes.length !== 1 ||
+      normalizeMediaType(metadata.mediaType) !==
+        normalizeMediaType(mediaTypes[0]!)
+    ) {
+      issues.push(
         createRequestBodyIssue(
           route,
-
           "OPENAPI_REQUEST_BODY_MEDIA_TYPE_CONFLICT",
-
-          `OpenAPI request body media type "${metadata.mediaType}" contradicts the JSON runtime body contract for ${route.method} ${route.path}.`,
+          mediaTypes.length === 1
+            ? `OpenAPI request body media type "${metadata.mediaType}" contradicts runtime media type "${mediaTypes[0]}" for ${route.method} ${route.path}.`
+            : `OpenAPI request body media type "${metadata.mediaType}" cannot replace the ${mediaTypes.length} runtime media types accepted by ${route.method} ${route.path}.`,
         ),
-      ],
-    };
+      );
+    }
   }
 
-  let preparedSchema: ResolvedJSONSchema | undefined;
+  const content: Record<string, ProjectedMediaTypeObject> = {};
 
-  /*
-   * Precedence:
-   *
-   * opaque
-   *   > explicit OpenAPI schema
-   *   > Standard JSON Schema conversion
-   */
-  if (metadata?.opaque !== true) {
-    if (metadata?.schema !== undefined) {
-      try {
-        preparedSchema = prepareSchemaOccurrence(
+  let resolvedAutomaticSchema: ResolvedJSONSchema | undefined;
+
+  if (
+    metadata?.opaque !== true &&
+    metadata?.schema === undefined &&
+    parser !== "arrayBuffer"
+  ) {
+    if (resolver === undefined) {
+      issues.push(
+        createRequestBodyIssue(
           route,
-
-          {
-            kind: "body",
-          },
-
-          cloneOpenAPIJSONSchema(metadata.schema),
-        );
-      } catch (cause) {
-        return {
-          requestBody: undefined,
-
-          issues: [
-            createRequestBodyIssue(
-              route,
-
-              schemaResourceIssueCode(cause),
-
-              `Failed to prepare the OpenAPI request body schema override for ${route.method} ${route.path}: ${schemaResourceIssueDetail(cause)}`,
-
-              cause,
-            ),
-          ],
-        };
-      }
-    } else if (body !== undefined) {
-      if (resolver === undefined) {
-        return {
-          requestBody: undefined,
-
-          issues: [
-            createRequestBodyIssue(
-              route,
-
-              "OPENAPI_REQUEST_BODY_SCHEMA_RESOLVER_REQUIRED",
-
-              "Automatic request body projection requires an input JSON Schema resolver.",
-            ),
-          ],
-        };
-      }
-
-      let schema: ResolvedJSONSchema;
-
+          "OPENAPI_REQUEST_BODY_SCHEMA_RESOLVER_REQUIRED",
+          "Automatic request body projection requires an input JSON Schema resolver.",
+        ),
+      );
+    } else {
       try {
-        schema = resolver.resolveInput(body);
+        resolvedAutomaticSchema = resolver.resolveInput(body);
       } catch (cause) {
-        return {
-          requestBody: undefined,
-
-          issues: [
-            createRequestBodyIssue(
-              route,
-
-              "OPENAPI_REQUEST_BODY_SCHEMA_RESOLUTION_FAILED",
-
-              `Failed to resolve the request body schema for ${route.method} ${route.path}.`,
-
-              cause,
-            ),
-          ],
-        };
-      }
-
-      try {
-        preparedSchema = prepareSchemaOccurrence(
-          route,
-
-          {
-            kind: "body",
-          },
-
-          schema,
+        issues.push(
+          createRequestBodyIssue(
+            route,
+            "OPENAPI_REQUEST_BODY_SCHEMA_RESOLUTION_FAILED",
+            `Failed to resolve the request body schema for ${route.method} ${route.path}.`,
+            cause,
+          ),
         );
-      } catch (cause) {
-        return {
-          requestBody: undefined,
-
-          issues: [
-            createRequestBodyIssue(
-              route,
-
-              schemaResourceIssueCode(cause),
-
-              `Failed to prepare the request body schema for ${route.method} ${route.path}: ${schemaResourceIssueDetail(cause)}`,
-
-              cause,
-            ),
-          ],
-        };
       }
     }
   }
 
-  const media: ProjectedMediaTypeObject =
-    preparedSchema === undefined
-      ? {}
-      : {
-          schema: preparedSchema,
-        };
+  for (const mediaType of mediaTypes) {
+    let preparedSchema: ResolvedJSONSchema | undefined;
+
+    if (metadata?.opaque !== true) {
+      const sourceSchema =
+        metadata?.schema === undefined
+          ? resolvedAutomaticSchema
+          : cloneOpenAPIJSONSchema(metadata.schema);
+
+      if (sourceSchema !== undefined) {
+        try {
+          preparedSchema = prepareSchemaOccurrence(
+            route,
+            mediaTypes.length === 1
+              ? {
+                  kind: "body",
+                }
+              : {
+                  kind: "body",
+                  mediaType,
+                },
+            sourceSchema,
+          );
+        } catch (cause) {
+          issues.push(
+            createRequestBodyIssue(
+              route,
+              schemaResourceIssueCode(cause),
+              `Failed to prepare the OpenAPI request body schema for media type "${mediaType}" on ${route.method} ${route.path}: ${schemaResourceIssueDetail(cause)}`,
+              cause,
+            ),
+          );
+        }
+      }
+    }
+
+    content[mediaType] =
+      preparedSchema === undefined
+        ? {}
+        : {
+            schema: preparedSchema,
+          };
+  }
 
   const requestBody: ProjectedRequestBodyObject = {
-    content: {
-      [mediaType]: media,
-    },
+    required: true,
+    content,
   };
 
   if (metadata?.description !== undefined) {
     requestBody.description = metadata.description;
   }
 
-  if (metadata?.required !== undefined) {
+  return {
+    requestBody,
+    issues,
+  };
+}
+
+function projectDocumentationOnlyBody(
+  route: ContractRouteSnapshot,
+
+  metadata: OpenAPIRequestBodyMetadata | undefined,
+): RequestBodyProjectionResult {
+  if (metadata === undefined) {
+    return {
+      requestBody: undefined,
+      issues: [],
+    };
+  }
+
+  const mediaType = metadata.mediaType ?? "application/json";
+  let preparedSchema: ResolvedJSONSchema | undefined;
+
+  if (metadata.opaque !== true && metadata.schema !== undefined) {
+    try {
+      preparedSchema = prepareSchemaOccurrence(
+        route,
+        {
+          kind: "body",
+        },
+        cloneOpenAPIJSONSchema(metadata.schema),
+      );
+    } catch (cause) {
+      return {
+        requestBody: undefined,
+        issues: [
+          createRequestBodyIssue(
+            route,
+            schemaResourceIssueCode(cause),
+            `Failed to prepare the OpenAPI request body schema override for ${route.method} ${route.path}: ${schemaResourceIssueDetail(cause)}`,
+            cause,
+          ),
+        ],
+      };
+    }
+  }
+
+  const requestBody: ProjectedRequestBodyObject = {
+    content: {
+      [mediaType]:
+        preparedSchema === undefined
+          ? {}
+          : {
+              schema: preparedSchema,
+            },
+    },
+  };
+
+  if (metadata.description !== undefined) {
+    requestBody.description = metadata.description;
+  }
+
+  if (metadata.required !== undefined) {
     requestBody.required = metadata.required;
-  } else if (body !== undefined) {
-    requestBody.required = true;
   }
 
   return {
     requestBody,
-
     issues: [],
   };
 }
 
-function getRequestBodyMetadata(route: ContractRouteSnapshot): OpenAPIRequestBodyMetadata | undefined {
+function managedMediaTypes(
+  route: ContractRouteSnapshot,
+
+  parser: NonNullable<ContractRouteSnapshot["bodyParser"]> | "json",
+): readonly string[] {
+  const explicit = route.bodyContentTypes;
+
+  if (explicit !== undefined) {
+    return explicit;
+  }
+
+  switch (parser) {
+    case "json":
+      return ["application/json"];
+
+    case "text":
+      return ["text/plain"];
+
+    case "urlencoded":
+      return ["application/x-www-form-urlencoded"];
+
+    case "multipart":
+      return ["multipart/form-data"];
+
+    case "arrayBuffer":
+      return ["application/octet-stream"];
+  }
+}
+
+function getRequestBodyMetadata(
+  route: ContractRouteSnapshot,
+): OpenAPIRequestBodyMetadata | undefined {
   const openapi = route.openapi;
 
   if (openapi === undefined || openapi === false) {
@@ -216,7 +291,9 @@ function getRequestBodyMetadata(route: ContractRouteSnapshot): OpenAPIRequestBod
   return openapi.request?.body;
 }
 
-function cloneOpenAPIJSONSchema(schema: OpenAPIJSONSchema): ResolvedJSONSchema {
+function cloneOpenAPIJSONSchema(
+  schema: OpenAPIJSONSchema,
+): ResolvedJSONSchema {
   if (typeof schema === "boolean") {
     return schema;
   }
@@ -224,18 +301,20 @@ function cloneOpenAPIJSONSchema(schema: OpenAPIJSONSchema): ResolvedJSONSchema {
   const cloned = structuredClone(schema);
 
   if (!isRecord(cloned)) {
-    throw new TypeError("OpenAPI request body schema override must be a JSON Schema object or boolean schema.");
+    throw new TypeError(
+      "OpenAPI request body schema override must be a JSON Schema object or boolean schema.",
+    );
   }
 
   return cloned;
 }
 
-function isRuntimeJSONMediaType(value: string): boolean {
+function normalizeMediaType(value: string): string {
   const separator = value.indexOf(";");
 
-  const mediaType = (separator === -1 ? value : value.slice(0, separator)).trim().toLowerCase();
-
-  return mediaType === "application/json" || (mediaType.startsWith("application/") && mediaType.endsWith("+json"));
+  return (separator === -1 ? value : value.slice(0, separator))
+    .trim()
+    .toLowerCase();
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -253,19 +332,10 @@ function createRequestBodyIssue(
 ): OpenAPIGenerationIssue {
   return {
     code,
-
     method: route.method,
-
     path: route.path,
-
     location: "request.body",
-
     message,
-
-    ...(cause === undefined
-      ? {}
-      : {
-          cause,
-        }),
+    ...(cause === undefined ? {} : { cause }),
   };
 }

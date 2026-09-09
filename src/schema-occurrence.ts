@@ -1,6 +1,9 @@
 import type { ContractRouteSnapshot } from "gelis";
 
-import { prepareSchemaResource, SchemaResourceError } from "./schema-resource";
+import {
+  prepareSchemaResource,
+  SchemaResourceError,
+} from "./schema-resource";
 
 import type { ResolvedJSONSchema } from "./schema-resolution";
 
@@ -17,6 +20,8 @@ export type SchemaOccurrence =
     }
   | {
       readonly kind: "body";
+
+      readonly mediaType?: string;
     }
   | {
       readonly kind: "response";
@@ -24,7 +29,8 @@ export type SchemaOccurrence =
       readonly status: number | "default";
     };
 
-const SYNTHETIC_SCHEMA_ORIGIN = "https://schemas.gelis.invalid/openapi";
+const SYNTHETIC_SCHEMA_ORIGIN =
+  "https://schemas.gelis.invalid/openapi";
 
 export function prepareSchemaOccurrence(
   route: ContractRouteSnapshot,
@@ -33,7 +39,10 @@ export function prepareSchemaOccurrence(
 
   schema: ResolvedJSONSchema,
 ): ResolvedJSONSchema {
-  return prepareSchemaResource(schema, createSyntheticSchemaResourceId(route, occurrence));
+  return prepareSchemaResource(
+    schema,
+    createSyntheticSchemaResourceId(route, occurrence),
+  );
 }
 
 export function schemaResourceIssueCode(cause: unknown): string {
@@ -62,11 +71,14 @@ function createSyntheticSchemaResourceId(
   switch (occurrence.kind) {
     case "path":
       return `${routeBase}/request/path/${encodeURIComponent(occurrence.name)}`;
+
     case "query":
       return `${routeBase}/request/query/${encodeURIComponent(occurrence.name)}`;
 
     case "body":
-      return `${routeBase}/request/body`;
+      return occurrence.mediaType === undefined
+        ? `${routeBase}/request/body`
+        : `${routeBase}/request/body/${encodeURIComponent(occurrence.mediaType)}`;
 
     case "response":
       return `${routeBase}/responses/${occurrence.status}`;

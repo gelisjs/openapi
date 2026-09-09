@@ -1,4 +1,7 @@
-import { OPENAPI_JSON_SCHEMA_DIALECT, OPENAPI_VERSION } from "./types";
+import {
+  OPENAPI_JSON_SCHEMA_DIALECT,
+  OPENAPI_VERSION,
+} from "./types";
 
 import type {
   OpenAPIDocument,
@@ -11,17 +14,17 @@ import type {
 /*
  * Internal root-document constructor.
  *
- * It intentionally is not exported from the
- * package root. generateOpenAPI() is the public
- * construction API.
+ * It intentionally is not exported from the package root.
+ * generateOpenAPI() is the public construction API.
  */
-export function createOpenAPIRoot(options: OpenAPIGenerationOptions): OpenAPIDocument {
+export function createOpenAPIRoot(
+  options: OpenAPIGenerationOptions,
+): OpenAPIDocument {
   const servers = options.servers;
-
   const tags = options.tags;
 
   return {
-    openapi: OPENAPI_VERSION,
+    openapi: options.version ?? OPENAPI_VERSION,
 
     jsonSchemaDialect: OPENAPI_JSON_SCHEMA_DIALECT,
 
@@ -49,7 +52,9 @@ function cloneInfo(info: Readonly<OpenAPIInfoObject>): OpenAPIInfoObject {
   };
 }
 
-function cloneServer(server: Readonly<OpenAPIServerObject>): OpenAPIServerObject {
+function cloneServer(
+  server: Readonly<OpenAPIServerObject>,
+): OpenAPIServerObject {
   return {
     ...server,
   };

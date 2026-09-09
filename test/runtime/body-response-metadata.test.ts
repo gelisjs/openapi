@@ -20,6 +20,8 @@ describe("OpenAPI body and response metadata", () => {
       {
         body: runtimeSchema,
 
+        bodyContentTypes: ["application/vnd.gelis.item+json"],
+
         openapi: {
           request: {
             body: {
@@ -82,7 +84,8 @@ describe("OpenAPI body and response metadata", () => {
 
             $ref: "#/$defs/item",
 
-            $id: "https://schemas.gelis.invalid/openapi/post/%2Fitems/request/body",
+            $id:
+              "https://schemas.gelis.invalid/openapi/post/%2Fitems/request/body",
           },
         },
       },
@@ -165,11 +168,17 @@ describe("OpenAPI body and response metadata", () => {
         location: "request.body",
 
         message:
-          'OpenAPI request body media type "text/plain" contradicts the JSON runtime body contract for POST /items.',
+          'OpenAPI request body media type "text/plain" contradicts runtime media type "application/json" for POST /items.',
       },
     ]);
 
-    expect(result.paths["/items"]?.post?.requestBody).toBeUndefined();
+    expect(result.paths["/items"]?.post?.requestBody).toEqual({
+      required: true,
+
+      content: {
+        "application/json": {},
+      },
+    });
   });
 
   test("uses explicit response schema metadata without running output conversion", () => {
@@ -249,7 +258,8 @@ describe("OpenAPI body and response metadata", () => {
 
             $ref: "#/$defs/item",
 
-            $id: "https://schemas.gelis.invalid/openapi/get/%2Fitems/responses/200",
+            $id:
+              "https://schemas.gelis.invalid/openapi/get/%2Fitems/responses/200",
           },
         },
       },
@@ -520,7 +530,10 @@ describe("OpenAPI body and response metadata", () => {
   });
 });
 
-function createSchema<Output = Record<string, unknown>>(): StandardSchemaV1<Output, Output> {
+function createSchema<Output = Record<string, unknown>>(): StandardSchemaV1<
+  Output,
+  Output
+> {
   return {
     "~standard": {
       version: 1,

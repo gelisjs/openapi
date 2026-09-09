@@ -1,7 +1,7 @@
 {
   "name": "@gelis/openapi",
   "version": "0.0.0",
-  "description": "OpenAPI 3.1 contract generation for Gelis.",
+  "description": "OpenAPI 3.1 and 3.2 contract generation for Gelis.",
   "license": "MIT",
   "type": "module",
   "private": true,
@@ -41,7 +41,7 @@
     "@types/bun": "^1.4.0",
     "@valibot/to-json-schema": "1.7.1",
     "arktype": "2.2.3",
-    "gelis": "git+https://github.com/gelisjs/gelis.git#e339664bb7574e773450d6f644af484e9da55525",
+    "gelis": "git+https://github.com/gelisjs/gelis.git#884e8bed42a40ff69ed1180a155fec6839d26539",
     "typescript": "7.0.2",
     "valibot": "1.4.2",
     "zod": "4.5.4"
