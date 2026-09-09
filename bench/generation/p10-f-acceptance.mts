@@ -82,300 +82,6 @@ const RICH_1000_TO_5000_LIMIT = 6.0;
 const VERSION_OVERHEAD_LIMIT = 1.10;
 const DOCUMENT_SIZE_LIMIT = 5.5;
 
-const config = parseConfig(process.argv.slice(2));
-const workerPath = fileURLToPath(
-  new URL("./p10-f-worker.mts", import.meta.url),
-);
-
-const controlInfo = readRepositoryInfo(config.controlRoot);
-const candidateInfo = readRepositoryInfo(config.candidateRoot);
-
-console.log("P10-F OpenAPI Generation Scalability Acceptance");
-console.log(`Bun:       ${Bun.version}`);
-console.log(`Control:   ${controlInfo.head}`);
-console.log(`Candidate: ${candidateInfo.head}`);
-console.log(`Control dirty:   ${controlInfo.dirty ? "yes" : "no"}`);
-console.log(`Candidate dirty: ${candidateInfo.dirty ? "yes" : "no"}`);
-console.log();
-
-if (controlInfo.dirty || candidateInfo.dirty) {
-  throw new Error("P10-F acceptance requires clean control and candidate worktrees.");
-}
-
-const control = new WorkerClient(config.controlRoot, workerPath);
-const candidate = new WorkerClient(config.candidateRoot, workerPath);
-
-let failed = false;
-
-try {
-  await Promise.all([control.ready, candidate.ready]);
-
-  const legacyResults = await runLegacyAcceptance(control, candidate);
-  const legacyGeomean = geometricMean(
-    legacyResults.map((result) => result.medianRatio),
-  );
-
-  console.log("Legacy B21 regression matrix (5,000 routes)");
-  console.log(
-    "| scenario | mode | median candidate/control | control-first | candidate-first | gate |",
-  );
-  console.log("| --- | --- | ---: | ---: | ---: | --- | ");
-
-  for (const result of legacyResults) {
-    console.log(
-      `| ${result.scenario} | ${result.mode} | ${formatRatio(result.medianRatio)} | ${formatRatio(result.controlFirstMedian)} | ${formatRatio(result.candidateFirstMedian)} | ${result.pass ? "PASS" : "FAIL"} |`,
-    );
-    failed ||= !result.pass;
-  }
-
-  const legacyGeomeanPass = legacyGeomean <= LEGACY_GEOMEAN_LIMIT;
-  console.log();
-  console.log(
-    `Legacy geomean: ${formatRatio(legacyGeomean)} <= ${LEGACY_GEOMEAN_LIMIT.toFixed(2)}x => ${legacyGeomeanPass ? "PASS" : "FAIL"}`,
-  );
-  failed ||= !legacyGeomeanPass;
-
-  console.log();
-
-  const richResults = await runRichAcceptance(candidate);
-  printRichResults(richResults);
-
-  const richGateResults = evaluateRichGates(richResults);
-
-  console.log();
-  console.log("Post-P9 rich scaling gates");
-  for (const gate of richGateResults) {
-    console.log(`${gate.label}: ${gate.detail} => ${gate.pass ? "PASS" : "FAIL"}`);
-    failed ||= !gate.pass;
-  }
-} finally {
-  await Promise.allSettled([control.close(), candidate.close()]);
-}
-
-console.log();
-console.log(failed ? "P10-F ACCEPTANCE: FAIL" : "P10-F ACCEPTANCE: PASS");
-
-if (failed) {
-  process.exitCode = 1;
-}
-
-async function runLegacyAcceptance(
-  control: WorkerClient,
-  candidate: WorkerClient,
-): Promise<LegacyResult[]> {
-  const results: LegacyResult[] = [];
-
-  for (const scenario of LEGACY_SCENARIOS) {
-    for (const mode of LEGACY_MODES) {
-      const caseConfig: CaseConfig = {
-        kind: "legacy",
-        scenario,
-        mode,
-        size: 5_000,
-      };
-
-      await Promise.all([
-        control.setup(caseConfig),
-        candidate.setup(caseConfig),
-      ]);
-      await Promise.all([
-        control.warmup(LEGACY_WARMUPS),
-        candidate.warmup(LEGACY_WARMUPS),
-      ]);
-
-      const ratios: number[] = [];
-      const controlFirst: number[] = [];
-      const candidateFirst: number[] = [];
-
-      for (let sample = 0; sample < LEGACY_SAMPLES; sample++) {
-        const isControlFirst = sample % 4 === 0 || sample % 4 === 3;
-
-        let controlMeasurement: Measurement;
-        let candidateMeasurement: Measurement;
-
-        if (isControlFirst) {
-          controlMeasurement = await control.measure();
-          candidateMeasurement = await candidate.measure();
-        } else {
-          candidateMeasurement = await candidate.measure();
-          controlMeasurement = await control.measure();
-        }
-
-        const ratio =
-          candidateMeasurement.elapsedMs / controlMeasurement.elapsedMs;
-        ratios.push(ratio);
-        (isControlFirst ? controlFirst : candidateFirst).push(ratio);
-      }
-
-      const medianRatio = median(ratios);
-
-      results.push({
-        scenario,
-        mode,
-        medianRatio,
-        controlFirstMedian: median(controlFirst),
-        candidateFirstMedian: median(candidateFirst),
-        pass: medianRatio <= LEGACY_CASE_LIMIT,
-      });
-    }
-  }
-
-  return results;
-}
-
-async function runRichAcceptance(
-  candidate: WorkerClient,
-): Promise<RichResult[]> {
-  const results: RichResult[] = [];
-
-  for (const mode of RICH_MODES) {
-    for (const version of OPENAPI_VERSIONS) {
-      for (const size of RICH_SIZES) {
-        const caseConfig: CaseConfig = {
-          kind: "rich",
-          mode,
-          version,
-          size,
-        };
-
-        await candidate.setup(caseConfig);
-        await candidate.warmup(RICH_WARMUPS);
-
-        const elapsed: number[] = [];
-        let documentBytes: number | undefined;
-
-        for (let sample = 0; sample < RICH_SAMPLES; sample++) {
-          const measurement = await candidate.measure();
-          elapsed.push(measurement.elapsedMs);
-
-          if (measurement.documentBytes !== undefined) {
-            if (
-              documentBytes !== undefined &&
-              documentBytes !== measurement.documentBytes
-            ) {
-              throw new Error(
-                `${mode}/${version}/${size}: generated document size changed between samples.`,
-              );
-            }
-
-            documentBytes = measurement.documentBytes;
-          }
-        }
-
-        results.push({
-          mode,
-          version,
-          size,
-          medianMs: median(elapsed),
-          ...(documentBytes === undefined ? {} : { documentBytes }),
-        });
-      }
-    }
-  }
-
-  return results;
-}
-
-function printRichResults(results: readonly RichResult[]): void {
-  console.log("Post-P9 rich generation");
-  console.log("| mode | version | routes | median ms | us/route | document bytes | ");
-  console.log("| --- | --- | ---: | ---: | ---: | ---: | ");
-
-  for (const result of results) {
-    console.log(
-      `| ${result.mode} | ${result.version} | ${result.size} | ${format(result.medianMs)} | ${format((result.medianMs * 1_000) / result.size)} | ${result.documentBytes ?? "-"} |`,
-    );
-  }
-}
-
-function evaluateRichGates(
-  results: readonly RichResult[],
-): readonly {
-  readonly label: string;
-  readonly detail: string;
-  readonly pass: boolean;
-}[] {
-  const gates: {
-    label: string;
-    detail: string;
-    pass: boolean;
-  }[] = [];
-
-  for (const mode of RICH_MODES) {
-    for (const version of OPENAPI_VERSIONS) {
-      const at100 = requireRichResult(results, mode, version, 100);
-      const at1000 = requireRichResult(results, mode, version, 1_000);
-      const at5000 = requireRichResult(results, mode, version, 5_000);
-
-      const firstGrowth = at1000.medianMs / at100.medianMs;
-      const secondGrowth = at5000.medianMs / at1000.medianMs;
-
-      gates.push({
-        label: `${mode} ${version} 100->1000`,
-        detail: `${formatRatio(firstGrowth)} <= ${RICH_100_TO_1000_LIMIT.toFixed(1)}x`,
-        pass: firstGrowth <= RICH_100_TO_1000_LIMIT,
-      });
-      gates.push({
-        label: `${mode} ${version} 1000->5000`,
-        detail: `${formatRatio(secondGrowth)} <= ${RICH_1000_TO_5000_LIMIT.toFixed(1)}x`,
-        pass: secondGrowth <= RICH_1000_TO_5000_LIMIT,
-      });
-    }
-  }
-
-  for (const mode of RICH_MODES) {
-    const version31 = requireRichResult(results, mode, "3.1.2", 5_000);
-    const version32 = requireRichResult(results, mode, "3.2.0", 5_000);
-    const ratio = version32.medianMs / version31.medianMs;
-
-    gates.push({
-      label: `${mode} 3.2/3.1 @5000`,
-      detail: `${formatRatio(ratio)} <= ${VERSION_OVERHEAD_LIMIT.toFixed(2)}x`,
-      pass: ratio <= VERSION_OVERHEAD_LIMIT,
-    });
-  }
-
-  for (const version of OPENAPI_VERSIONS) {
-    const at1000 = requireRichResult(results, "public", version, 1_000);
-    const at5000 = requireRichResult(results, "public", version, 5_000);
-
-    if (
-      at1000.documentBytes === undefined ||
-      at5000.documentBytes === undefined
-    ) {
-      throw new Error(`Missing public document size for OpenAPI ${version}.`);
-    }
-
-    const ratio = at5000.documentBytes / at1000.documentBytes;
-
-    gates.push({
-      label: `public ${version} document-size 1000->5000`,
-      detail: `${formatRatio(ratio)} <= ${DOCUMENT_SIZE_LIMIT.toFixed(1)}x`,
-      pass: ratio <= DOCUMENT_SIZE_LIMIT,
-    });
-  }
-
-  return gates;
-}
-
-function requireRichResult(
-  results: readonly RichResult[],
-  mode: RichMode,
-  version: OpenAPIVersion,
-  size: number,
-): RichResult {
-  const result = results.find(
-    (entry) =>
-      entry.mode === mode && entry.version === version && entry.size === size,
-  );
-
-  if (result === undefined) {
-    throw new Error(`Missing rich result for ${mode}/${version}/${size}.`);
-  }
-
-  return result;
-}
-
 class WorkerClient {
   readonly ready: Promise<void>;
 
@@ -502,6 +208,225 @@ class WorkerClient {
   }
 }
 
+async function runLegacyAcceptance(
+  control: WorkerClient,
+  candidate: WorkerClient,
+): Promise<LegacyResult[]> {
+  const results: LegacyResult[] = [];
+
+  for (const scenario of LEGACY_SCENARIOS) {
+    for (const mode of LEGACY_MODES) {
+      const caseConfig: CaseConfig = {
+        kind: "legacy",
+        scenario,
+        mode,
+        size: 5_000,
+      };
+
+      await Promise.all([
+        control.setup(caseConfig),
+        candidate.setup(caseConfig),
+      ]);
+      await Promise.all([
+        control.warmup(LEGACY_WARMUPS),
+        candidate.warmup(LEGACY_WARMUPS),
+      ]);
+
+      const ratios: number[] = [];
+      const controlFirst: number[] = [];
+      const candidateFirst: number[] = [];
+
+      for (let sample = 0; sample < LEGACY_SAMPLES; sample++) {
+        const isControlFirst = sample % 4 === 0 || sample % 4 === 3;
+
+        let controlMeasurement: Measurement;
+        let candidateMeasurement: Measurement;
+
+        if (isControlFirst) {
+          controlMeasurement = await control.measure();
+          candidateMeasurement = await candidate.measure();
+        } else {
+          candidateMeasurement = await candidate.measure();
+          controlMeasurement = await control.measure();
+        }
+
+        const ratio =
+          candidateMeasurement.elapsedMs / controlMeasurement.elapsedMs;
+        ratios.push(ratio);
+        (isControlFirst ? controlFirst : candidateFirst).push(ratio);
+      }
+
+      const medianRatio = median(ratios);
+
+      results.push({
+        scenario,
+        mode,
+        medianRatio,
+        controlFirstMedian: median(controlFirst),
+        candidateFirstMedian: median(candidateFirst),
+        pass: medianRatio <= LEGACY_CASE_LIMIT,
+      });
+    }
+  }
+
+  return results;
+}
+
+async function runRichAcceptance(
+  candidate: WorkerClient,
+): Promise<RichResult[]> {
+  const results: RichResult[] = [];
+
+  for (const mode of RICH_MODES) {
+    for (const version of OPENAPI_VERSIONS) {
+      for (const size of RICH_SIZES) {
+        const caseConfig: CaseConfig = {
+          kind: "rich",
+          mode,
+          version,
+          size,
+        };
+
+        await candidate.setup(caseConfig);
+        await candidate.warmup(RICH_WARMUPS);
+
+        const elapsed: number[] = [];
+        let documentBytes: number | undefined;
+
+        for (let sample = 0; sample < RICH_SAMPLES; sample++) {
+          const measurement = await candidate.measure();
+          elapsed.push(measurement.elapsedMs);
+
+          if (measurement.documentBytes !== undefined) {
+            if (
+              documentBytes !== undefined &&
+              documentBytes !== measurement.documentBytes
+            ) {
+              throw new Error(
+                `${mode}/${version}/${size}: generated document size changed between samples.`,
+              );
+            }
+
+            documentBytes = measurement.documentBytes;
+          }
+        }
+
+        results.push({
+          mode,
+          version,
+          size,
+          medianMs: median(elapsed),
+          ...(documentBytes === undefined ? {} : { documentBytes }),
+        });
+      }
+    }
+  }
+
+  return results;
+}
+
+function printRichResults(results: readonly RichResult[]): void {
+  console.log("Post-P9 rich generation");
+  console.log(
+    "| mode | version | routes | median ms | us/route | document bytes |",
+  );
+  console.log("| --- | --- | ---: | ---: | ---: | ---: |");
+
+  for (const result of results) {
+    console.log(
+      `| ${result.mode} | ${result.version} | ${result.size} | ${format(result.medianMs)} | ${format((result.medianMs * 1_000) / result.size)} | ${result.documentBytes ?? "-"} |`,
+    );
+  }
+}
+
+function evaluateRichGates(
+  results: readonly RichResult[],
+): readonly {
+  readonly label: string;
+  readonly detail: string;
+  readonly pass: boolean;
+}[] {
+  const gates: {
+    label: string;
+    detail: string;
+    pass: boolean;
+  }[] = [];
+
+  for (const mode of RICH_MODES) {
+    for (const version of OPENAPI_VERSIONS) {
+      const at100 = requireRichResult(results, mode, version, 100);
+      const at1000 = requireRichResult(results, mode, version, 1_000);
+      const at5000 = requireRichResult(results, mode, version, 5_000);
+
+      const firstGrowth = at1000.medianMs / at100.medianMs;
+      const secondGrowth = at5000.medianMs / at1000.medianMs;
+
+      gates.push({
+        label: `${mode} ${version} 100->1000`,
+        detail: `${formatRatio(firstGrowth)} <= ${RICH_100_TO_1000_LIMIT.toFixed(1)}x`,
+        pass: firstGrowth <= RICH_100_TO_1000_LIMIT,
+      });
+      gates.push({
+        label: `${mode} ${version} 1000->5000`,
+        detail: `${formatRatio(secondGrowth)} <= ${RICH_1000_TO_5000_LIMIT.toFixed(1)}x`,
+        pass: secondGrowth <= RICH_1000_TO_5000_LIMIT,
+      });
+    }
+  }
+
+  for (const mode of RICH_MODES) {
+    const version31 = requireRichResult(results, mode, "3.1.2", 5_000);
+    const version32 = requireRichResult(results, mode, "3.2.0", 5_000);
+    const ratio = version32.medianMs / version31.medianMs;
+
+    gates.push({
+      label: `${mode} 3.2/3.1 @5000`,
+      detail: `${formatRatio(ratio)} <= ${VERSION_OVERHEAD_LIMIT.toFixed(2)}x`,
+      pass: ratio <= VERSION_OVERHEAD_LIMIT,
+    });
+  }
+
+  for (const version of OPENAPI_VERSIONS) {
+    const at1000 = requireRichResult(results, "public", version, 1_000);
+    const at5000 = requireRichResult(results, "public", version, 5_000);
+
+    if (
+      at1000.documentBytes === undefined ||
+      at5000.documentBytes === undefined
+    ) {
+      throw new Error(`Missing public document size for OpenAPI ${version}.`);
+    }
+
+    const ratio = at5000.documentBytes / at1000.documentBytes;
+
+    gates.push({
+      label: `public ${version} document-size 1000->5000`,
+      detail: `${formatRatio(ratio)} <= ${DOCUMENT_SIZE_LIMIT.toFixed(1)}x`,
+      pass: ratio <= DOCUMENT_SIZE_LIMIT,
+    });
+  }
+
+  return gates;
+}
+
+function requireRichResult(
+  results: readonly RichResult[],
+  mode: RichMode,
+  version: OpenAPIVersion,
+  size: number,
+): RichResult {
+  const result = results.find(
+    (entry) =>
+      entry.mode === mode && entry.version === version && entry.size === size,
+  );
+
+  if (result === undefined) {
+    throw new Error(`Missing rich result for ${mode}/${version}/${size}.`);
+  }
+
+  return result;
+}
+
 function parseConfig(args: readonly string[]): {
   readonly controlRoot: string;
   readonly candidateRoot: string;
@@ -600,3 +525,88 @@ function formatRatio(value: number): string {
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
+
+async function main(): Promise<void> {
+  const config = parseConfig(process.argv.slice(2));
+  const workerPath = fileURLToPath(
+    new URL("./p10-f-worker.mts", import.meta.url),
+  );
+
+  const controlInfo = readRepositoryInfo(config.controlRoot);
+  const candidateInfo = readRepositoryInfo(config.candidateRoot);
+
+  console.log("P10-F OpenAPI Generation Scalability Acceptance");
+  console.log(`Bun:       ${Bun.version}`);
+  console.log(`Control:   ${controlInfo.head}`);
+  console.log(`Candidate: ${candidateInfo.head}`);
+  console.log(`Control dirty:   ${controlInfo.dirty ? "yes" : "no"}`);
+  console.log(`Candidate dirty: ${candidateInfo.dirty ? "yes" : "no"}`);
+  console.log();
+
+  if (controlInfo.dirty || candidateInfo.dirty) {
+    throw new Error(
+      "P10-F acceptance requires clean control and candidate worktrees.",
+    );
+  }
+
+  const control = new WorkerClient(config.controlRoot, workerPath);
+  const candidate = new WorkerClient(config.candidateRoot, workerPath);
+
+  let failed = false;
+
+  try {
+    await Promise.all([control.ready, candidate.ready]);
+
+    const legacyResults = await runLegacyAcceptance(control, candidate);
+    const legacyGeomean = geometricMean(
+      legacyResults.map((result) => result.medianRatio),
+    );
+
+    console.log("Legacy B21 regression matrix (5,000 routes)");
+    console.log(
+      "| scenario | mode | median candidate/control | control-first | candidate-first | gate |",
+    );
+    console.log("| --- | --- | ---: | ---: | ---: | --- |");
+
+    for (const result of legacyResults) {
+      console.log(
+        `| ${result.scenario} | ${result.mode} | ${formatRatio(result.medianRatio)} | ${formatRatio(result.controlFirstMedian)} | ${formatRatio(result.candidateFirstMedian)} | ${result.pass ? "PASS" : "FAIL"} |`,
+      );
+      failed ||= !result.pass;
+    }
+
+    const legacyGeomeanPass = legacyGeomean <= LEGACY_GEOMEAN_LIMIT;
+    console.log();
+    console.log(
+      `Legacy geomean: ${formatRatio(legacyGeomean)} <= ${LEGACY_GEOMEAN_LIMIT.toFixed(2)}x => ${legacyGeomeanPass ? "PASS" : "FAIL"}`,
+    );
+    failed ||= !legacyGeomeanPass;
+
+    console.log();
+
+    const richResults = await runRichAcceptance(candidate);
+    printRichResults(richResults);
+
+    const richGateResults = evaluateRichGates(richResults);
+
+    console.log();
+    console.log("Post-P9 rich scaling gates");
+    for (const gate of richGateResults) {
+      console.log(
+        `${gate.label}: ${gate.detail} => ${gate.pass ? "PASS" : "FAIL"}`,
+      );
+      failed ||= !gate.pass;
+    }
+  } finally {
+    await Promise.allSettled([control.close(), candidate.close()]);
+  }
+
+  console.log();
+  console.log(failed ? "P10-F ACCEPTANCE: FAIL" : "P10-F ACCEPTANCE: PASS");
+
+  if (failed) {
+    process.exitCode = 1;
+  }
+}
+
+await main();
