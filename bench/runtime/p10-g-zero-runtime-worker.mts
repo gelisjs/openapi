@@ -172,7 +172,7 @@ function createRichApplication(documentedRoutes: boolean): Gelis {
         200: {
           schema,
           serialize: "json" as const,
-          validate: true,
+          validate: true as const,
         },
       },
       ...(documentedRoutes
