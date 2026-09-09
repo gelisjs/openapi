@@ -6,40 +6,26 @@ import type {
 } from "gelis";
 
 import { projectQueryParameters } from "./query";
-
 import type { ProjectedQueryParameterObject } from "./query";
-
 import { projectRequestBody } from "./request-body";
-
 import type { ProjectedRequestBodyObject } from "./request-body";
-
 import {
   getInputSchemaResolver,
   getOutputSchemaResolver,
 } from "./schema-resolution";
-
 import type {
   ResolvedJSONSchema,
   SchemaResolver,
 } from "./schema-resolution";
-
 import { projectResponses } from "./response";
-
 import type { ProjectedResponsesObject } from "./response";
-
 import {
   prepareSchemaOccurrence,
   schemaResourceIssueCode,
   schemaResourceIssueDetail,
 } from "./schema-occurrence";
-
 import { createStandardJSONSchemaProjectionResolver } from "./standard-json-schema";
-
-import {
-  OPENAPI_VERSION,
-  OPENAPI_VERSION_3_2,
-} from "./types";
-
+import { OPENAPI_VERSION, OPENAPI_VERSION_3_2 } from "./types";
 import type {
   OpenAPIGenerationIssue,
   OpenAPIVersion,
@@ -56,15 +42,10 @@ type OpenAPIStandardMethodKey =
 
 export interface ProjectedPathParameterObject {
   name: string;
-
   in: "path";
-
   required: true;
-
   description?: string;
-
   deprecated?: boolean;
-
   schema: ResolvedJSONSchema;
 }
 
@@ -74,19 +55,12 @@ export type ProjectedParameterObject =
 
 export interface ProjectedOperationObject {
   summary?: string;
-
   description?: string;
-
   operationId?: string;
-
   tags?: string[];
-
   deprecated?: boolean;
-
   parameters?: ProjectedParameterObject[];
-
   requestBody?: ProjectedRequestBodyObject;
-
   responses: ProjectedResponsesObject;
 }
 
@@ -94,9 +68,7 @@ export type ProjectedPathItemObject = Partial<
   Record<OpenAPIStandardMethodKey, ProjectedOperationObject>
 > & {
   query?: ProjectedOperationObject;
-
   additionalOperations?: Record<string, ProjectedOperationObject>;
-
   "x-oai-additionalOperations"?: Record<
     string,
     ProjectedOperationObject
@@ -105,79 +77,65 @@ export type ProjectedPathItemObject = Partial<
 
 export interface PathProjectionResult {
   readonly paths: Record<string, ProjectedPathItemObject>;
-
   readonly issues: OpenAPIGenerationIssue[];
 }
 
 interface PathCandidate {
   readonly route: ContractRouteSnapshot;
-
   readonly openapiPath: string;
-
   readonly templateShape: string;
-
   readonly parameterNames: readonly string[];
 }
 
 interface TemplateOwner {
   readonly sourcePath: string;
-
   readonly openapiPath: string;
 }
 
-type SemanticPathOperations = Map<string, ProjectedOperationObject>;
+type SemanticPathOperations = Partial<
+  Record<OpenAPIStandardMethodKey, ProjectedOperationObject>
+> & {
+  semanticQuery?: ProjectedOperationObject;
+  customOperations?: Record<string, ProjectedOperationObject>;
+};
 
-const STANDARD_METHODS: readonly (
-  readonly [string, OpenAPIStandardMethodKey]
-)[] = [
-  ["GET", "get"],
-  ["POST", "post"],
-  ["PUT", "put"],
-  ["PATCH", "patch"],
-  ["DELETE", "delete"],
-  ["OPTIONS", "options"],
-  ["HEAD", "head"],
+const STANDARD_METHOD_KEYS: readonly OpenAPIStandardMethodKey[] = [
+  "get",
+  "post",
+  "put",
+  "patch",
+  "delete",
+  "options",
+  "head",
 ];
-
-const STANDARD_METHOD_SET = new Set<string>(
-  STANDARD_METHODS.map(([method]) => method),
-);
 
 export function projectPaths(
   contract: ApplicationContractSnapshot,
-
   versionOrResolver: OpenAPIVersion | SchemaResolver = OPENAPI_VERSION,
-
   resolver?: SchemaResolver,
 ): PathProjectionResult {
   const version =
     typeof versionOrResolver === "string"
       ? versionOrResolver
       : OPENAPI_VERSION;
-
   const suppliedResolver =
     typeof versionOrResolver === "string"
       ? resolver
       : versionOrResolver;
 
   const issues: OpenAPIGenerationIssue[] = [];
-
   const activeResolver =
     suppliedResolver ?? createStandardJSONSchemaProjectionResolver();
-
   const inputResolver = getInputSchemaResolver(activeResolver);
   const outputResolver = getOutputSchemaResolver(activeResolver);
 
   const candidates = createCandidates(contract);
-
   const grouped = new Map<string, SemanticPathOperations>();
   const templateOwners = new Map<string, TemplateOwner>();
-
   const operationIds = new Map<
     string,
     {
       readonly method: string;
-
       readonly path: string;
     }
   >();
@@ -196,12 +154,10 @@ export function projectPaths(
           `Gelis ALL route ${route.path} cannot be represented as one OpenAPI operation. ` +
           "Exclude it with openapi:false or document concrete operations explicitly.",
       });
-
       continue;
     }
 
     const metadata = getRouteMetadata(route);
-
     validateOperationId(route, metadata, operationIds, issues);
 
     const queryProjection = projectQueryParameters(route, inputResolver);
@@ -215,7 +171,6 @@ export function projectPaths(
     );
 
     const existingOwner = templateOwners.get(templateShape);
-
     if (
       existingOwner !== undefined &&
       existingOwner.sourcePath !== route.path
@@ -227,7 +182,6 @@ export function projectPaths(
         location: "path",
         message: `Route "${route.path}" conflicts with "${existingOwner.sourcePath}" after OpenAPI path-template projection.`,
       });
-
       continue;
     }
 
@@ -239,13 +193,20 @@ export function projectPaths(
     }
 
     let operations = grouped.get(openapiPath);
-
     if (operations === undefined) {
-      operations = new Map<string, ProjectedOperationObject>();
+      operations = {};
       grouped.set(openapiPath, operations);
     }
 
-    if (operations.has(route.method)) {
+    const standardKey = toStandardMethodKey(route.method);
+    const existingOperation =
+      standardKey !== undefined
+        ? operations[standardKey]
+        : route.method === "QUERY"
+          ? operations.semanticQuery
+          : operations.customOperations?.[route.method];
+
+    if (existingOperation !== undefined) {
       issues.push({
         code: "OPENAPI_OPERATION_COLLISION",
         method: route.method,
@@ -253,7 +214,6 @@ export function projectPaths(
         location: `paths.${openapiPath}.${route.method}`,
         message: `Multiple Gelis routes project to OpenAPI operation ${route.method} ${openapiPath}.`,
       });
-
       continue;
     }
 
@@ -262,7 +222,6 @@ export function projectPaths(
       parameterNames,
       issues,
     );
-
     const parameters: ProjectedParameterObject[] = [
       ...pathParameters,
       ...queryProjection.parameters,
@@ -277,12 +236,25 @@ export function projectPaths(
     if (parameters.length > 0) {
       operation.parameters = parameters;
     }
-
     if (bodyProjection.requestBody !== undefined) {
       operation.requestBody = bodyProjection.requestBody;
     }
 
-    operations.set(route.method, operation);
+    if (standardKey !== undefined) {
+      operations[standardKey] = operation;
+    } else if (route.method === "QUERY") {
+      operations.semanticQuery = operation;
+    } else {
+      let customOperations = operations.customOperations;
+      if (customOperations === undefined) {
+        customOperations = Object.create(null) as Record<
+          string,
+          ProjectedOperationObject
+        >;
+        operations.customOperations = customOperations;
+      }
+      customOperations[route.method] = operation;
+    }
   }
 
   return {
@@ -302,7 +274,6 @@ function createCandidates(
     }
 
     const path = projectPath(route.path);
-
     candidates.push({
       route,
       ...path,
@@ -325,21 +296,17 @@ function createCandidates(
 
 function projectPath(path: string): {
   readonly openapiPath: string;
-
   readonly templateShape: string;
-
   readonly parameterNames: readonly string[];
 } {
   const sourceSegments = path.split("/");
   const parameterNames: string[] = [];
-
   const openapiSegments = sourceSegments.map((segment) => {
     if (segment.startsWith(":") && segment.length > 1) {
       const name = segment.slice(1);
       parameterNames.push(name);
       return `{${name}}`;
     }
-
     return segment;
   });
 
@@ -357,9 +324,7 @@ function projectPath(path: string): {
 
 function createPathParameters(
   route: ContractRouteSnapshot,
-
   names: readonly string[],
-
   issues: OpenAPIGenerationIssue[],
 ): ProjectedPathParameterObject[] {
   const parameters: ProjectedPathParameterObject[] = [];
@@ -370,11 +335,9 @@ function createPathParameters(
     if (seen.has(name)) {
       continue;
     }
-
     seen.add(name);
 
     const patch = metadata?.[name];
-
     let schema: ResolvedJSONSchema = {
       type: "string",
     };
@@ -411,7 +374,6 @@ function createPathParameters(
     if (patch?.description !== undefined) {
       parameter.description = patch.description;
     }
-
     if (patch?.deprecated !== undefined) {
       parameter.deprecated = patch.deprecated;
     }
@@ -421,12 +383,10 @@ function createPathParameters(
 
   if (metadata !== undefined) {
     const patchedNames = Object.keys(metadata).sort(compareStrings);
-
     for (const name of patchedNames) {
       if (seen.has(name)) {
         continue;
       }
-
       issues.push({
         code: "OPENAPI_PATH_PARAMETER_UNKNOWN",
         method: route.method,
@@ -446,35 +406,28 @@ function getRouteMetadata(
   if (route.openapi === undefined || route.openapi === false) {
     return undefined;
   }
-
   return route.openapi;
 }
 
 function applyOperationMetadata(
   operation: ProjectedOperationObject,
-
   metadata: OpenAPIRouteMetadata | undefined,
 ): void {
   if (metadata === undefined) {
     return;
   }
-
   if (metadata.summary !== undefined) {
     operation.summary = metadata.summary;
   }
-
   if (metadata.description !== undefined) {
     operation.description = metadata.description;
   }
-
   if (metadata.operationId !== undefined) {
     operation.operationId = metadata.operationId;
   }
-
   if (metadata.tags !== undefined) {
     operation.tags = [...metadata.tags];
   }
-
   if (metadata.deprecated !== undefined) {
     operation.deprecated = metadata.deprecated;
   }
@@ -482,28 +435,22 @@ function applyOperationMetadata(
 
 function validateOperationId(
   route: ContractRouteSnapshot,
-
   metadata: OpenAPIRouteMetadata | undefined,
-
   operationIds: Map<
     string,
     {
       readonly method: string;
-
       readonly path: string;
     }
   >,
-
   issues: OpenAPIGenerationIssue[],
 ): void {
   const operationId = metadata?.operationId;
-
   if (operationId === undefined) {
     return;
   }
 
   const existing = operationIds.get(operationId);
-
   if (existing === undefined) {
     operationIds.set(operationId, {
       method: route.method,
@@ -529,13 +476,11 @@ function cloneOpenAPIJSONSchema(
   }
 
   const cloned = structuredClone(schema);
-
   if (!isRecord(cloned)) {
     throw new TypeError(
       "OpenAPI schema override must be a JSON Schema object or boolean schema.",
     );
   }
-
   return cloned;
 }
 
@@ -545,7 +490,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function finalizePaths(
   grouped: ReadonlyMap<string, SemanticPathOperations>,
-
   version: OpenAPIVersion,
 ): Record<string, ProjectedPathItemObject> {
   const paths: Record<string, ProjectedPathItemObject> = {};
@@ -553,70 +497,85 @@ function finalizePaths(
 
   for (const path of sortedPaths) {
     const source = grouped.get(path);
-
     if (source === undefined) {
       continue;
     }
 
     const item: ProjectedPathItemObject = {};
-
-    for (const [method, key] of STANDARD_METHODS) {
-      const operation = source.get(method);
-
+    for (const key of STANDARD_METHOD_KEYS) {
+      const operation = source[key];
       if (operation !== undefined) {
         item[key] = operation;
       }
     }
 
-    const query = source.get("QUERY");
-    const customMethods = [...source.keys()]
-      .filter(
-        (method) =>
-          method !== "QUERY" && !STANDARD_METHOD_SET.has(method),
-      )
-      .sort(compareStrings);
+    const query = source.semanticQuery;
+    const customOperations = source.customOperations;
+    const customMethods =
+      customOperations === undefined
+        ? []
+        : Object.keys(customOperations).sort(compareStrings);
 
     if (version === OPENAPI_VERSION_3_2) {
       if (query !== undefined) {
         item.query = query;
       }
 
-      if (customMethods.length > 0) {
+      if (customMethods.length > 0 && customOperations !== undefined) {
         const additionalOperations: Record<
           string,
           ProjectedOperationObject
         > = {};
-
         for (const method of customMethods) {
-          additionalOperations[method] = source.get(method)!;
+          additionalOperations[method] = customOperations[method]!;
         }
-
         item.additionalOperations = additionalOperations;
       }
-    } else {
-      const additionalMethods =
-        query === undefined
-          ? customMethods
-          : ["QUERY", ...customMethods];
+    } else if (query !== undefined || customMethods.length > 0) {
+      const additionalOperations: Record<
+        string,
+        ProjectedOperationObject
+      > = {};
 
-      if (additionalMethods.length > 0) {
-        const additionalOperations: Record<
-          string,
-          ProjectedOperationObject
-        > = {};
-
-        for (const method of additionalMethods) {
-          additionalOperations[method] = source.get(method)!;
-        }
-
-        item["x-oai-additionalOperations"] = additionalOperations;
+      if (query !== undefined) {
+        additionalOperations.QUERY = query;
       }
+      if (customOperations !== undefined) {
+        for (const method of customMethods) {
+          additionalOperations[method] = customOperations[method]!;
+        }
+      }
+
+      item["x-oai-additionalOperations"] = additionalOperations;
     }
 
     paths[path] = item;
   }
 
   return paths;
+}
+
+function toStandardMethodKey(
+  method: string,
+): OpenAPIStandardMethodKey | undefined {
+  switch (method) {
+    case "GET":
+      return "get";
+    case "POST":
+      return "post";
+    case "PUT":
+      return "put";
+    case "PATCH":
+      return "patch";
+    case "DELETE":
+      return "delete";
+    case "OPTIONS":
+      return "options";
+    case "HEAD":
+      return "head";
+    default:
+      return undefined;
+  }
 }
 
 function isTemplateSegment(segment: string): boolean {
@@ -654,11 +613,9 @@ function compareStrings(left: string, right: string): number {
   if (left < right) {
     return -1;
   }
-
   if (left > right) {
     return 1;
   }
-
   return 0;
 }
 
