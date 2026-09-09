@@ -13,6 +13,9 @@ import type {
   OpenAPIGenerationIssue,
   OpenAPIGenerationOptions,
   OpenAPIHttpMethod,
+  OpenAPIInfoObject,
+  OpenAPIServerObject,
+  OpenAPITagObject,
   OpenAPIVersion,
 } from "../../src";
 
@@ -44,22 +47,31 @@ type _DocumentDialect = Expect<
 
 type _Method = Expect<Equal<OpenAPIHttpMethod, string>>;
 
-const minimalOptions: OpenAPIGenerationOptions = {
-  info: {
-    title: "Gelis API",
+const info: OpenAPIInfoObject = {
+  title: "Gelis API",
+  version: "1.0.0",
+  description: "Public API",
+};
 
-    version: "1.0.0",
-  },
+const server: OpenAPIServerObject = {
+  url: "https://api.example.com",
+  description: "Production",
+};
+
+const tag: OpenAPITagObject = {
+  name: "users",
+  description: "User operations",
+};
+
+const minimalOptions: OpenAPIGenerationOptions = {
+  info,
 };
 
 const version32Options: OpenAPIGenerationOptions = {
   version: "3.2.0",
-
-  info: {
-    title: "Gelis API",
-
-    version: "1.0.0",
-  },
+  info,
+  servers: [server],
+  tags: [tag],
 };
 
 const app = new Gelis();
@@ -70,17 +82,11 @@ type _GeneratedDocument = Expect<Equal<typeof generated, OpenAPIDocument>>;
 
 const fullIssue: OpenAPIGenerationIssue = {
   code: "TEST",
-
   method: "PURGE",
-
   path: "/users",
-
   location: "responses.default",
-
   status: "default",
-
   message: "Test issue.",
-
   cause: new Error(),
 };
 
@@ -100,10 +106,8 @@ const missingVersion: OpenAPIGenerationOptions = {
 const invalidOpenAPIVersion: OpenAPIGenerationOptions = {
   // @ts-expect-error unsupported OpenAPI output version
   version: "3.0.3",
-
   info: {
     title: "Invalid OpenAPI version",
-
     version: "1.0.0",
   },
 };
@@ -113,18 +117,28 @@ generateOpenAPI(app);
 
 type PublicAPI = typeof import("../../src/index");
 
-type _HasGenerator = Expect<
-  Equal<"generateOpenAPI" extends keyof PublicAPI ? true : false, true>
->;
-
-type _HasVersion32 = Expect<
-  Equal<"OPENAPI_VERSION_3_2" extends keyof PublicAPI ? true : false, true>
+type _RuntimeExportSurface = Expect<
+  Equal<
+    keyof PublicAPI,
+    | "generateOpenAPI"
+    | "OpenAPIGenerationError"
+    | "OPENAPI_JSON_SCHEMA_DIALECT"
+    | "OPENAPI_VERSION"
+    | "OPENAPI_VERSION_3_2"
+  >
 >;
 
 type _NoInternalRootBuilder = Expect<
   Equal<"createOpenAPIRoot" extends keyof PublicAPI ? true : false, false>
 >;
 
+type _NoInternalPathProjection = Expect<
+  Equal<"projectPaths" extends keyof PublicAPI ? true : false, false>
+>;
+
+void info;
+void server;
+void tag;
 void minimalOptions;
 void version32Options;
 void generated;
